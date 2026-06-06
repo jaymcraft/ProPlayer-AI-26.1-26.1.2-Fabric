@@ -1798,8 +1798,21 @@ public class FunctionCallerV2 {
     private static CompletableFuture<String> placeStructureBlockLikePlayer(ServerPlayer bot, BlockPos pos, String blockId) {
         return CompletableFuture.supplyAsync(() -> {
             try {
+                String supportResult = ensureStructurePlacementSupport(bot, pos, blockId, 0);
+                if (supportResult.startsWith("❌") || supportResult.startsWith("⚠️")) {
+                    return supportResult;
+                }
+
+                while (pos.getY() - bot.blockPosition().getY() > 3) {
+                    String pillarResult = pillarUpLikePlayer(bot, blockId).get(10, TimeUnit.SECONDS);
+                    if (pillarResult.startsWith("❌") || pillarResult.startsWith("⚠️")) {
+                        return pillarResult;
+                    }
+                    Thread.sleep(350L);
+                }
+
                 if (!isWithinPlacementRange(bot, pos)) {
-                    BlockPos nearby = chooseBuilderPosition(bot.blockPosition(), pos);
+                    BlockPos nearby = chooseBuilderPosition(bot, pos);
                     String moveResult = startPreciseCoordinateMove(nearby.getX(), nearby.getY(), nearby.getZ(), true)
                             .get(120, TimeUnit.SECONDS);
                     logger.info("Moved near structure placement target {} via {}", pos, moveResult);
@@ -1812,22 +1825,144 @@ public class FunctionCallerV2 {
         }, executor);
     }
 
+    private static String ensureStructurePlacementSupport(ServerPlayer bot, BlockPos targetPos, String blockId, int depth) throws Exception {
+        if (depth > 16) {
+            return "❌ Could not build support high enough for " + targetPos;
+        }
+
+        ServerLevel world = (ServerLevel) bot.level();
+        BlockState targetState = world.getBlockState(targetPos);
+        if (!targetState.isAir() && !targetState.canBeReplaced()) {
+            return "✅ Target already has a block at " + targetPos;
+        }
+
+        if (hasAdjacentSolidPlacementSurface(world, targetPos)) {
+            return "✅ Supported";
+        }
+
+        BlockPos supportPos = targetPos.below();
+        BlockState supportState = world.getBlockState(supportPos);
+        if (!supportState.isAir() && !supportState.canBeReplaced()) {
+            return hasAdjacentSolidPlacementSurface(world, targetPos) ? "✅ Supported" : "❌ No placeable support near " + targetPos;
+        }
+
+        String lowerSupportResult = ensureStructurePlacementSupport(bot, supportPos, blockId, depth + 1);
+        if (lowerSupportResult.startsWith("❌") || lowerSupportResult.startsWith("⚠️")) {
+            return lowerSupportResult;
+        }
+
+        if (!isWithinPlacementRange(bot, supportPos)) {
+            BlockPos nearby = chooseBuilderPosition(bot, supportPos);
+            startPreciseCoordinateMove(nearby.getX(), nearby.getY(), nearby.getZ(), true).get(120, TimeUnit.SECONDS);
+        }
+
+        while (supportPos.getY() - bot.blockPosition().getY() > 3) {
+            String pillarResult = pillarUpLikePlayer(bot, blockId).get(10, TimeUnit.SECONDS);
+            if (pillarResult.startsWith("❌") || pillarResult.startsWith("⚠️")) {
+                return pillarResult;
+            }
+            Thread.sleep(350L);
+        }
+
+        return BlockPlacementTool.placeBlock(bot, supportPos, blockId).get(10, TimeUnit.SECONDS);
+    }
+
+    private static boolean hasAdjacentSolidPlacementSurface(ServerLevel world, BlockPos targetPos) {
+        for (Direction direction : Direction.values()) {
+            BlockPos adjacentPos = targetPos.relative(direction);
+            BlockState adjacentState = world.getBlockState(adjacentPos);
+            if (!adjacentState.isAir() && adjacentState.isRedstoneConductor(world, adjacentPos)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static CompletableFuture<String> pillarUpLikePlayer(ServerPlayer bot, String blockId) {
+        CompletableFuture<String> future = new CompletableFuture<>();
+        MinecraftServer server = ((ServerLevel) bot.level()).getServer();
+        BlockPos jumpStartFeet = bot.blockPosition();
+        server.execute(bot::jumpFromGround);
+
+        executor.submit(() -> {
+            try {
+                Thread.sleep(250L);
+                BlockPos supportPos = isValidPillarPlacementPos(bot, jumpStartFeet)
+                        ? jumpStartFeet
+                        : findPillarPlacementPos(bot);
+                if (supportPos == null) {
+                    future.complete("❌ Could not find a block under me to pillar up from");
+                    return;
+                }
+                String result = BlockPlacementTool.placeBlock(bot, supportPos, blockId).get(10, TimeUnit.SECONDS);
+                future.complete(result);
+            } catch (Exception e) {
+                logger.error("Failed to pillar up like player", e);
+                future.complete("❌ Failed to pillar up: " + e.getMessage());
+            }
+        });
+
+        return future;
+    }
+
+    private static BlockPos findPillarPlacementPos(ServerPlayer bot) {
+        ServerLevel world = (ServerLevel) bot.level();
+        BlockPos feet = bot.blockPosition();
+        List<BlockPos> candidates = List.of(feet, feet.below(), feet.above());
+        for (BlockPos candidate : candidates) {
+            if (isValidPillarPlacementPos(bot, candidate)) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static boolean isValidPillarPlacementPos(ServerPlayer bot, BlockPos candidate) {
+        ServerLevel world = (ServerLevel) bot.level();
+        BlockState state = world.getBlockState(candidate);
+        return (state.isAir() || state.canBeReplaced()) && hasAdjacentSolidPlacementSurface(world, candidate);
+    }
+
     private static boolean isWithinPlacementRange(ServerPlayer bot, BlockPos targetPos) {
         return Math.sqrt(targetPos.distToCenterSqr(bot.position())) <= 4.5;
     }
 
-    private static BlockPos chooseBuilderPosition(BlockPos currentPos, BlockPos targetPos) {
+    private static BlockPos chooseBuilderPosition(ServerPlayer bot, BlockPos targetPos) {
+        BlockPos currentPos = bot.blockPosition();
         int dx = Integer.compare(currentPos.getX(), targetPos.getX());
         int dz = Integer.compare(currentPos.getZ(), targetPos.getZ());
         if (dx == 0 && dz == 0) {
             dz = 1;
         }
 
+        int targetX = targetPos.getX() + dx * 2;
+        int targetZ = targetPos.getZ() + dz * 2;
         return new BlockPos(
-                targetPos.getX() + dx * 2,
-                Math.max(currentPos.getY(), targetPos.getY()),
-                targetPos.getZ() + dz * 2
+                targetX,
+                findStandableBuilderY((ServerLevel) bot.level(), targetX, targetZ, currentPos.getY()),
+                targetZ
         );
+    }
+
+    private static int findStandableBuilderY(ServerLevel world, int x, int z, int preferredY) {
+        for (int offset = 0; offset <= 24; offset++) {
+            int downY = preferredY - offset;
+            if (isStandableAt(world, x, downY, z)) {
+                return downY;
+            }
+        }
+        return preferredY;
+    }
+
+    private static boolean isStandableAt(ServerLevel world, int x, int y, int z) {
+        BlockPos feet = new BlockPos(x, y, z);
+        BlockState below = world.getBlockState(feet.below());
+        BlockState body = world.getBlockState(feet);
+        BlockState head = world.getBlockState(feet.above());
+        return !below.isAir()
+                && below.isRedstoneConductor(world, feet.below())
+                && (body.isAir() || body.canBeReplaced())
+                && (head.isAir() || head.canBeReplaced());
     }
 
     private static boolean consumeInventoryItem(Inventory inventory, Item item, int count) {
