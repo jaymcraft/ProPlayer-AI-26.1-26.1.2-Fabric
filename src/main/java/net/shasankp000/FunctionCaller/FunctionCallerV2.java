@@ -1517,42 +1517,62 @@ public class FunctionCallerV2 {
     }
 
     private static boolean tryHandleDirectHouseBuild(String userInput) {
-        if (!isHouseBuildRequest(userInput)) {
+        BuildingType buildingType = extractBuildingType(userInput);
+        if (buildingType == null) {
             return false;
         }
 
         if (botSource == null || botSource.getPlayer() == null) {
-            logger.warn("Direct house build request ignored because botSource/player is null");
+            logger.warn("Direct build request ignored because botSource/player is null");
             return false;
         }
 
         Optional<Block> requestedBlock = extractHouseBlock(userInput);
         if (requestedBlock.isEmpty()) {
-            String clarification = "What type of block should I use for the house?";
-            ChatContextManager.setPendingClarification(playerUUID, "build a house", clarification, botSource.getTextName());
+            String clarification = "What type of block should I use for the " + buildingType.displayName() + "?";
+            ChatContextManager.setPendingClarification(playerUUID, userInput, clarification, botSource.getTextName());
             sendMessageToPlayer(clarification);
             return true;
         }
 
-        buildSimpleHouseAtBot(requestedBlock.get());
+        buildSimpleHouseAtBot(requestedBlock.get(), extractHouseSize(userInput, buildingType), buildingType);
         return true;
     }
 
-    private static boolean isHouseBuildRequest(String userInput) {
+    private static BuildingType extractBuildingType(String userInput) {
         if (userInput == null) {
-            return false;
+            return null;
         }
 
         String normalized = userInput.toLowerCase(Locale.ROOT);
-        if (normalized.contains("original:") && normalized.contains("build") && normalized.contains("house")) {
-            return true;
+        boolean buildIntent = normalized.matches(".*\\b(build|make|construct)\\b.*")
+                || (normalized.contains("original:") && normalized.matches(".*\\b(build|make|construct)\\b.*"));
+        if (!buildIntent) {
+            return null;
         }
 
-        return normalized.matches(".*\\b(build|make|construct)\\b.*\\b(house|home|hut|base)\\b.*");
+        if (normalized.matches(".*\\b(sky\\s*scraper|skyscraper)\\b.*")) {
+            return BuildingType.SKYSCRAPER;
+        }
+        if (normalized.matches(".*\\b(castle|fort|fortress)\\b.*")) {
+            return BuildingType.CASTLE;
+        }
+        if (normalized.matches(".*\\b(tower|watchtower)\\b.*")) {
+            return BuildingType.TOWER;
+        }
+        if (normalized.matches(".*\\b(house|home|hut|base)\\b.*")) {
+            return BuildingType.HOUSE;
+        }
+        if (normalized.matches(".*\\b(building|structure|shop|store|office|school|barn|temple|church|cabin)\\b.*")) {
+            return BuildingType.BUILDING;
+        }
+        return null;
     }
 
     private static Optional<Block> extractHouseBlock(String userInput) {
-        String materialText = extractClarificationAnswer(userInput).orElseGet(() -> extractInlineHouseMaterial(userInput));
+        String materialText = sanitizeBuildingMaterial(
+                extractClarificationAnswer(userInput).orElseGet(() -> extractInlineHouseMaterial(userInput))
+        );
         if (materialText == null || materialText.isBlank()) {
             return Optional.empty();
         }
@@ -1570,6 +1590,20 @@ public class FunctionCallerV2 {
         }
 
         return block;
+    }
+
+    private static String sanitizeBuildingMaterial(String materialText) {
+        if (materialText == null) {
+            return "";
+        }
+
+        return materialText
+                .replaceAll("(?i)\\b(?:size|sized)\\s+\\d{1,2}\\b", " ")
+                .replaceAll("(?i)\\b\\d{1,2}\\s*(?:x|by)\\s*\\d{1,2}\\b", " ")
+                .replaceAll("(?i)\\b(?:small|medium|normal|big|large|huge|giant|very big|very large)\\b", " ")
+                .replaceAll("(?i)\\b(?:house|home|hut|base|castle|fort|fortress|tower|watchtower|sky\\s*scraper|skyscraper|building|structure|shop|store|office|school|barn|temple|church|cabin)\\b", " ")
+                .replaceAll("\\s+", " ")
+                .trim();
     }
 
     private static Optional<String> extractClarificationAnswer(String userInput) {
@@ -1601,25 +1635,57 @@ public class FunctionCallerV2 {
         return matcher.group(1).replaceAll("\\s+", " ").trim();
     }
 
-    private static void buildSimpleHouseAtBot(Block wallBlock) {
+    private static HouseSize extractHouseSize(String userInput, BuildingType buildingType) {
+        if (userInput == null) {
+            return HouseSize.defaultFor(buildingType);
+        }
+
+        String normalized = userInput.toLowerCase(Locale.ROOT).replaceAll("\\s+", " ");
+        Matcher rectangle = Pattern.compile("\\b(\\d{1,2})\\s*(?:x|by)\\s*(\\d{1,2})\\b").matcher(normalized);
+        if (rectangle.find()) {
+            return HouseSize.of(Integer.parseInt(rectangle.group(1)), Integer.parseInt(rectangle.group(2)), buildingType);
+        }
+
+        Matcher sizeNumber = Pattern.compile("\\b(?:size|sized|big|large)\\s+(\\d{1,2})\\b").matcher(normalized);
+        if (sizeNumber.find()) {
+            int size = Integer.parseInt(sizeNumber.group(1));
+            return HouseSize.of(size, size, buildingType);
+        }
+
+        if (normalized.matches(".*\\b(huge|giant|very big|very large)\\b.*")) {
+            return HouseSize.of(9, 9, buildingType);
+        }
+        if (normalized.matches(".*\\b(big|large)\\b.*")) {
+            return HouseSize.of(7, 7, buildingType);
+        }
+        if (normalized.matches(".*\\b(medium|normal)\\b.*")) {
+            return HouseSize.of(5, 5, buildingType);
+        }
+
+        return HouseSize.defaultFor(buildingType);
+    }
+
+    private static void buildSimpleHouseAtBot(Block wallBlock, HouseSize houseSize, BuildingType buildingType) {
         ServerPlayer bot = botSource.getPlayer();
         BlockPos origin = bot.blockPosition();
         Direction doorwayDirection = bot.getDirection();
         Identifier blockId = BuiltInRegistries.BLOCK.getKey(wallBlock);
-        List<BlockPos> blueprint = buildManualHouseBlueprint(origin, doorwayDirection);
+        List<BlockPos> blueprint = buildManualStructureBlueprint(origin, doorwayDirection, houseSize, buildingType);
 
         AutoFaceEntity.setBotExecutingTask(true);
-        ChatUtils.sendChatMessages(botSource, "Building a small house using " + blockId + ".");
+        ChatUtils.sendChatMessages(botSource, "Building a " + houseSize.width() + "x" + houseSize.depth()
+                + " " + buildingType.displayName() + " using " + blockId + ".");
         executor.submit(() -> {
             int placed = 0;
             try {
                 for (BlockPos pos : blueprint) {
                     String placementResult = placeManualHouseBlock(bot, pos, wallBlock).get(10, TimeUnit.SECONDS);
                     if (placementResult.startsWith("❌") || placementResult.startsWith("⚠️")) {
-                        String failure = "I had to stop building the house: " + placementResult;
+                        String failure = "I had to stop building the " + buildingType.displayName() + ": " + placementResult;
                         getFunctionOutput(failure);
                         ChatUtils.sendChatMessages(botSource, failure);
-                        storeActionMemory("buildHouse", Map.of(
+                        storeActionMemory("buildStructure", Map.of(
+                                "type", buildingType.displayName(),
                                 "blockType", blockId.toString(),
                                 "x", String.valueOf(origin.getX()),
                                 "y", String.valueOf(origin.getY()),
@@ -1631,20 +1697,24 @@ public class FunctionCallerV2 {
                     Thread.sleep(150L);
                 }
 
-                String result = "Manually built a small house using " + blockId + " at x:" + origin.getX()
+                String result = "Manually built a " + houseSize.width() + "x" + houseSize.depth()
+                        + " " + buildingType.displayName() + " using " + blockId + " at x:" + origin.getX()
                         + " y:" + origin.getY() + " z:" + origin.getZ() + ".";
                 getFunctionOutput(result);
-                storeActionMemory("buildHouse", Map.of(
+                storeActionMemory("buildStructure", Map.of(
+                        "type", buildingType.displayName(),
                         "blockType", blockId.toString(),
                         "x", String.valueOf(origin.getX()),
                         "y", String.valueOf(origin.getY()),
                         "z", String.valueOf(origin.getZ()),
+                        "width", String.valueOf(houseSize.width()),
+                        "depth", String.valueOf(houseSize.depth()),
                         "placedBlocks", String.valueOf(placed)
                 ), result);
                 ChatUtils.sendChatMessages(botSource, result);
             } catch (Exception e) {
-                logger.error("Failed to build house", e);
-                ChatUtils.sendChatMessages(botSource, "I couldn't build the house: " + e.getMessage());
+                logger.error("Failed to build {}", buildingType.displayName(), e);
+                ChatUtils.sendChatMessages(botSource, "I couldn't build the " + buildingType.displayName() + ": " + e.getMessage());
             } finally {
                 AutoFaceEntity.setBotExecutingTask(false);
             }
@@ -1702,46 +1772,171 @@ public class FunctionCallerV2 {
         return remaining == 0;
     }
 
-    private static List<BlockPos> buildManualHouseBlueprint(BlockPos origin, Direction doorwayDirection) {
+    private static List<BlockPos> buildManualStructureBlueprint(BlockPos origin, Direction doorwayDirection, HouseSize houseSize, BuildingType buildingType) {
+        return switch (buildingType) {
+            case CASTLE -> buildCastleBlueprint(origin, doorwayDirection, houseSize);
+            case SKYSCRAPER -> buildSkyscraperBlueprint(origin, doorwayDirection, houseSize);
+            case TOWER -> buildTowerBlueprint(origin, doorwayDirection, houseSize);
+            case BUILDING -> buildRectangularBuildingBlueprint(origin, doorwayDirection, houseSize);
+            case HOUSE -> buildHouseBlueprint(origin, doorwayDirection, houseSize);
+        };
+    }
+
+    private static List<BlockPos> buildHouseBlueprint(BlockPos origin, Direction doorwayDirection, HouseSize houseSize) {
+        return buildRectangularShellBlueprint(origin, doorwayDirection, houseSize, true, false);
+    }
+
+    private static List<BlockPos> buildRectangularBuildingBlueprint(BlockPos origin, Direction doorwayDirection, HouseSize houseSize) {
+        return buildRectangularShellBlueprint(origin, doorwayDirection, houseSize.withHeight(Math.max(3, houseSize.wallHeight() + 1)), true, true);
+    }
+
+    private static List<BlockPos> buildRectangularShellBlueprint(BlockPos origin, Direction doorwayDirection, HouseSize houseSize, boolean roof, boolean floors) {
         List<BlockPos> blocks = new ArrayList<>();
+        int minX = -houseSize.width() / 2;
+        int maxX = minX + houseSize.width() - 1;
+        int minZ = -houseSize.depth() / 2;
+        int maxZ = minZ + houseSize.depth() - 1;
+        int wallTopY = houseSize.wallHeight() - 1;
+        int roofY = houseSize.wallHeight();
         BlockPos doorway = switch (doorwayDirection) {
-            case NORTH -> origin.offset(0, 0, -1);
-            case SOUTH -> origin.offset(0, 0, 1);
-            case EAST -> origin.offset(1, 0, 0);
-            case WEST -> origin.offset(-1, 0, 0);
-            default -> origin.offset(0, 0, -1);
+            case NORTH -> origin.offset(0, 0, minZ);
+            case SOUTH -> origin.offset(0, 0, maxZ);
+            case EAST -> origin.offset(maxX, 0, 0);
+            case WEST -> origin.offset(minX, 0, 0);
+            default -> origin.offset(0, 0, minZ);
         };
 
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dz = -1; dz <= 1; dz++) {
-                boolean perimeter = dx == -1 || dx == 1 || dz == -1 || dz == 1;
-                if (perimeter) {
-                    addHouseBlock(blocks, origin.offset(dx, 0, dz), doorway);
+        for (int dy = 0; dy <= wallTopY; dy++) {
+            for (int dx = minX; dx <= maxX; dx++) {
+                for (int dz = minZ; dz <= maxZ; dz++) {
+                    boolean perimeter = dx == minX || dx == maxX || dz == minZ || dz == maxZ;
+                    if (perimeter) {
+                        addHouseBlock(blocks, origin.offset(dx, dy, dz), doorway, doorway.above());
+                    } else if (floors && dy > 0 && dy % 3 == 0) {
+                        blocks.add(origin.offset(dx, dy, dz));
+                    }
                 }
             }
         }
 
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dz = -1; dz <= 1; dz++) {
-                boolean perimeter = dx == -1 || dx == 1 || dz == -1 || dz == 1;
-                if (perimeter) {
-                    addHouseBlock(blocks, origin.offset(dx, 1, dz), doorway.above());
+        if (roof) {
+            for (int dx = minX; dx <= maxX; dx++) {
+                for (int dz = minZ; dz <= maxZ; dz++) {
+                    blocks.add(origin.offset(dx, roofY, dz));
                 }
-            }
-        }
-
-        for (int dx = -1; dx <= 1; dx++) {
-            for (int dz = -1; dz <= 1; dz++) {
-                blocks.add(origin.offset(dx, 2, dz));
             }
         }
 
         return blocks;
     }
 
-    private static void addHouseBlock(List<BlockPos> blocks, BlockPos pos, BlockPos excludedDoorwayPos) {
-        if (!pos.equals(excludedDoorwayPos)) {
-            blocks.add(pos);
+    private static List<BlockPos> buildCastleBlueprint(BlockPos origin, Direction doorwayDirection, HouseSize houseSize) {
+        List<BlockPos> blocks = buildRectangularShellBlueprint(origin, doorwayDirection, houseSize.withHeight(3), false, false);
+        int minX = -houseSize.width() / 2;
+        int maxX = minX + houseSize.width() - 1;
+        int minZ = -houseSize.depth() / 2;
+        int maxZ = minZ + houseSize.depth() - 1;
+        List<BlockPos> corners = List.of(
+                origin.offset(minX, 0, minZ),
+                origin.offset(minX, 0, maxZ),
+                origin.offset(maxX, 0, minZ),
+                origin.offset(maxX, 0, maxZ)
+        );
+
+        for (BlockPos corner : corners) {
+            for (int dy = 0; dy <= houseSize.wallHeight() + 2; dy++) {
+                blocks.add(corner.above(dy));
+            }
+        }
+
+        int battlementY = houseSize.wallHeight();
+        for (int dx = minX; dx <= maxX; dx += 2) {
+            blocks.add(origin.offset(dx, battlementY, minZ));
+            blocks.add(origin.offset(dx, battlementY, maxZ));
+        }
+        for (int dz = minZ; dz <= maxZ; dz += 2) {
+            blocks.add(origin.offset(minX, battlementY, dz));
+            blocks.add(origin.offset(maxX, battlementY, dz));
+        }
+
+        return uniqueBlockList(blocks);
+    }
+
+    private static List<BlockPos> buildTowerBlueprint(BlockPos origin, Direction doorwayDirection, HouseSize houseSize) {
+        HouseSize towerSize = HouseSize.of(Math.min(houseSize.width(), 5), Math.min(houseSize.depth(), 5), BuildingType.TOWER);
+        return buildRectangularShellBlueprint(origin, doorwayDirection, towerSize.withHeight(Math.max(6, houseSize.wallHeight())), true, true);
+    }
+
+    private static List<BlockPos> buildSkyscraperBlueprint(BlockPos origin, Direction doorwayDirection, HouseSize houseSize) {
+        HouseSize skyscraperSize = houseSize.withHeight(Math.max(8, houseSize.wallHeight()));
+        return buildRectangularShellBlueprint(origin, doorwayDirection, skyscraperSize, true, true);
+    }
+
+    private static List<BlockPos> uniqueBlockList(List<BlockPos> blocks) {
+        return new ArrayList<>(new LinkedHashSet<>(blocks));
+    }
+
+    private static void addHouseBlock(List<BlockPos> blocks, BlockPos pos, BlockPos... excludedDoorwayPositions) {
+        for (BlockPos excludedDoorwayPos : excludedDoorwayPositions) {
+            if (pos.equals(excludedDoorwayPos)) {
+                return;
+            }
+        }
+        blocks.add(pos);
+    }
+
+    private enum BuildingType {
+        HOUSE("house"),
+        BUILDING("building"),
+        CASTLE("castle"),
+        SKYSCRAPER("skyscraper"),
+        TOWER("tower");
+
+        private final String displayName;
+
+        BuildingType(String displayName) {
+            this.displayName = displayName;
+        }
+
+        private String displayName() {
+            return displayName;
+        }
+    }
+
+    private record HouseSize(int width, int depth, int wallHeight) {
+        private static HouseSize small() {
+            return new HouseSize(3, 3, 2);
+        }
+
+        private static HouseSize defaultFor(BuildingType buildingType) {
+            return switch (buildingType) {
+                case CASTLE -> of(7, 7, buildingType);
+                case SKYSCRAPER -> of(5, 5, buildingType);
+                case TOWER -> of(5, 5, buildingType);
+                case BUILDING -> of(5, 5, buildingType);
+                case HOUSE -> small();
+            };
+        }
+
+        private static HouseSize of(int requestedWidth, int requestedDepth, BuildingType buildingType) {
+            int width = clampHouseDimension(requestedWidth);
+            int depth = clampHouseDimension(requestedDepth);
+            int wallHeight = switch (buildingType) {
+                case SKYSCRAPER -> Math.max(8, Math.min(14, Math.max(width, depth) + 3));
+                case TOWER -> Math.max(6, Math.min(12, Math.max(width, depth) + 2));
+                case CASTLE -> Math.max(3, Math.min(6, Math.max(width, depth) / 2));
+                case BUILDING -> Math.max(3, Math.min(8, Math.max(width, depth)));
+                case HOUSE -> Math.max(2, Math.min(4, Math.max(width, depth) / 2));
+            };
+            return new HouseSize(width, depth, wallHeight);
+        }
+
+        private HouseSize withHeight(int newWallHeight) {
+            return new HouseSize(width, depth, Math.max(2, Math.min(16, newWallHeight)));
+        }
+
+        private static int clampHouseDimension(int requested) {
+            return Math.max(3, Math.min(32, requested));
         }
     }
 
