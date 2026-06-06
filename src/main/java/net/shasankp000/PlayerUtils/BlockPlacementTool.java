@@ -4,6 +4,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.resources.Identifier;
+import net.minecraft.server.MinecraftServer;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.BlockItem;
@@ -33,8 +35,28 @@ public class BlockPlacementTool {
      * @return CompletableFuture with result message
      */
     public static CompletableFuture<String> placeBlock(ServerPlayer bot, BlockPos targetPos, String blockType) {
-        return CompletableFuture.supplyAsync(() -> {
+        CompletableFuture<String> future = new CompletableFuture<>();
+        Runnable task = () -> {
             try {
+                future.complete(placeBlockOnServerThread(bot, targetPos, blockType));
+            } catch (Exception e) {
+                String error = "❌ Failed to place block: " + e.getMessage();
+                LOGGER.error(error, e);
+                future.complete(error);
+            }
+        };
+
+        MinecraftServer server = ((ServerLevel) bot.level()).getServer();
+        if (server.isSameThread()) {
+            task.run();
+        } else {
+            server.execute(task);
+        }
+        return future;
+    }
+
+    private static String placeBlockOnServerThread(ServerPlayer bot, BlockPos targetPos, String blockType) {
+        try {
                 // Step 1: Normalize block type (add minecraft: prefix if missing)
                 String normalizedBlockType = normalizeBlockType(blockType);
                 LOGGER.info("Attempting to place {} at {}", normalizedBlockType, targetPos);
@@ -93,9 +115,9 @@ public class BlockPlacementTool {
 
                 // Step 8: Perform block placement
                 Vec3 hitVec = Vec3.atCenterOf(adjacentPos).add(
-                        placementDirection.getStepX() * 0.5,
-                        placementDirection.getStepY() * 0.5,
-                        placementDirection.getStepZ() * 0.5
+                        placementDirection.getOpposite().getStepX() * 0.5,
+                        placementDirection.getOpposite().getStepY() * 0.5,
+                        placementDirection.getOpposite().getStepZ() * 0.5
                 );
 
                 BlockHitResult hitResult = new BlockHitResult(
@@ -133,7 +155,6 @@ public class BlockPlacementTool {
                 LOGGER.error(error, e);
                 return error;
             }
-        });
     }
 
     /**

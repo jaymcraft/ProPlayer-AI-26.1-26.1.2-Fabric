@@ -38,6 +38,7 @@ import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 import net.shasankp000.AIPlayer;
@@ -1601,25 +1602,44 @@ public class FunctionCallerV2 {
     }
 
     private static void buildSimpleHouseAtBot(Block wallBlock) {
-        MinecraftServer server = botSource.getServer();
         ServerPlayer bot = botSource.getPlayer();
-        ServerLevel world = (ServerLevel) bot.level();
         BlockPos origin = bot.blockPosition();
         Direction doorwayDirection = bot.getDirection();
         Identifier blockId = BuiltInRegistries.BLOCK.getKey(wallBlock);
+        List<BlockPos> blueprint = buildManualHouseBlueprint(origin, doorwayDirection);
 
         AutoFaceEntity.setBotExecutingTask(true);
-        server.execute(() -> {
+        ChatUtils.sendChatMessages(botSource, "Building a small house using " + blockId + ".");
+        executor.submit(() -> {
+            int placed = 0;
             try {
-                placeHouseBlocks(world, origin, doorwayDirection, wallBlock);
-                String result = "Built a small house using " + blockId + " at x:" + origin.getX()
+                for (BlockPos pos : blueprint) {
+                    String placementResult = placeManualHouseBlock(bot, pos, wallBlock).get(10, TimeUnit.SECONDS);
+                    if (placementResult.startsWith("❌") || placementResult.startsWith("⚠️")) {
+                        String failure = "I had to stop building the house: " + placementResult;
+                        getFunctionOutput(failure);
+                        ChatUtils.sendChatMessages(botSource, failure);
+                        storeActionMemory("buildHouse", Map.of(
+                                "blockType", blockId.toString(),
+                                "x", String.valueOf(origin.getX()),
+                                "y", String.valueOf(origin.getY()),
+                                "z", String.valueOf(origin.getZ())
+                        ), failure);
+                        return;
+                    }
+                    placed++;
+                    Thread.sleep(150L);
+                }
+
+                String result = "Manually built a small house using " + blockId + " at x:" + origin.getX()
                         + " y:" + origin.getY() + " z:" + origin.getZ() + ".";
                 getFunctionOutput(result);
                 storeActionMemory("buildHouse", Map.of(
                         "blockType", blockId.toString(),
                         "x", String.valueOf(origin.getX()),
                         "y", String.valueOf(origin.getY()),
-                        "z", String.valueOf(origin.getZ())
+                        "z", String.valueOf(origin.getZ()),
+                        "placedBlocks", String.valueOf(placed)
                 ), result);
                 ChatUtils.sendChatMessages(botSource, result);
             } catch (Exception e) {
@@ -1631,41 +1651,98 @@ public class FunctionCallerV2 {
         });
     }
 
-    private static void placeHouseBlocks(ServerLevel world, BlockPos origin, Direction doorwayDirection, Block wallBlock) {
-        var wallState = wallBlock.defaultBlockState();
+    private static CompletableFuture<String> placeManualHouseBlock(ServerPlayer bot, BlockPos pos, Block wallBlock) {
+        CompletableFuture<String> future = new CompletableFuture<>();
+        MinecraftServer server = ((ServerLevel) bot.level()).getServer();
+        server.execute(() -> {
+            try {
+                ServerLevel world = (ServerLevel) bot.level();
+                BlockState targetState = world.getBlockState(pos);
+                if (!targetState.isAir() && !targetState.canBeReplaced()) {
+                    future.complete("❌ Target position is already occupied by: " + targetState.getBlock().getName().getString());
+                    return;
+                }
 
-        for (int dx = -2; dx <= 2; dx++) {
-            for (int dz = -2; dz <= 2; dz++) {
-                world.setBlock(origin.offset(dx, -1, dz), wallState, 3);
+                Item wallItem = Item.byBlock(wallBlock);
+                if (wallItem == Items.AIR || !consumeInventoryItem(bot.getInventory(), wallItem, 1)) {
+                    future.complete("❌ Block not found in inventory: " + BuiltInRegistries.BLOCK.getKey(wallBlock));
+                    return;
+                }
+
+                world.setBlock(pos, wallBlock.defaultBlockState(), 3);
+                if (world.getBlockState(pos).getBlock() == wallBlock) {
+                    future.complete("✅ Placed " + BuiltInRegistries.BLOCK.getKey(wallBlock) + " at x:"
+                            + pos.getX() + " y:" + pos.getY() + " z:" + pos.getZ());
+                } else {
+                    future.complete("⚠️ Block was consumed but did not appear at target position");
+                }
+            } catch (Exception e) {
+                future.complete("❌ Failed to place block: " + e.getMessage());
             }
-        }
+        });
+        return future;
+    }
 
-        for (int dy = 0; dy <= 3; dy++) {
-            for (int dx = -2; dx <= 2; dx++) {
-                for (int dz = -2; dz <= 2; dz++) {
-                    boolean perimeter = dx == -2 || dx == 2 || dz == -2 || dz == 2;
-                    BlockPos pos = origin.offset(dx, dy, dz);
-                    world.setBlock(pos, perimeter ? wallState : Blocks.AIR.defaultBlockState(), 3);
+    private static boolean consumeInventoryItem(Inventory inventory, Item item, int count) {
+        int remaining = count;
+        for (int slot = 0; slot < inventory.getContainerSize() && remaining > 0; slot++) {
+            ItemStack stack = inventory.getItem(slot);
+            if (stack.isEmpty() || stack.getItem() != item) {
+                continue;
+            }
+
+            int removed = Math.min(remaining, stack.getCount());
+            stack.shrink(removed);
+            if (stack.isEmpty()) {
+                inventory.setItem(slot, ItemStack.EMPTY);
+            }
+            remaining -= removed;
+        }
+        inventory.setChanged();
+        return remaining == 0;
+    }
+
+    private static List<BlockPos> buildManualHouseBlueprint(BlockPos origin, Direction doorwayDirection) {
+        List<BlockPos> blocks = new ArrayList<>();
+        BlockPos doorway = switch (doorwayDirection) {
+            case NORTH -> origin.offset(0, 0, -1);
+            case SOUTH -> origin.offset(0, 0, 1);
+            case EAST -> origin.offset(1, 0, 0);
+            case WEST -> origin.offset(-1, 0, 0);
+            default -> origin.offset(0, 0, -1);
+        };
+
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                boolean perimeter = dx == -1 || dx == 1 || dz == -1 || dz == 1;
+                if (perimeter) {
+                    addHouseBlock(blocks, origin.offset(dx, 0, dz), doorway);
                 }
             }
         }
 
-        for (int dx = -2; dx <= 2; dx++) {
-            for (int dz = -2; dz <= 2; dz++) {
-                world.setBlock(origin.offset(dx, 4, dz), wallState, 3);
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                boolean perimeter = dx == -1 || dx == 1 || dz == -1 || dz == 1;
+                if (perimeter) {
+                    addHouseBlock(blocks, origin.offset(dx, 1, dz), doorway.above());
+                }
             }
         }
 
-        BlockPos doorway = switch (doorwayDirection) {
-            case NORTH -> origin.offset(0, 0, -2);
-            case SOUTH -> origin.offset(0, 0, 2);
-            case EAST -> origin.offset(2, 0, 0);
-            case WEST -> origin.offset(-2, 0, 0);
-            default -> origin.offset(0, 0, -2);
-        };
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dz = -1; dz <= 1; dz++) {
+                blocks.add(origin.offset(dx, 2, dz));
+            }
+        }
 
-        world.setBlock(doorway, Blocks.AIR.defaultBlockState(), 3);
-        world.setBlock(doorway.above(), Blocks.AIR.defaultBlockState(), 3);
+        return blocks;
+    }
+
+    private static void addHouseBlock(List<BlockPos> blocks, BlockPos pos, BlockPos excludedDoorwayPos) {
+        if (!pos.equals(excludedDoorwayPos)) {
+            blocks.add(pos);
+        }
     }
 
     private static void craftItem(String itemName, int batches) {
