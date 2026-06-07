@@ -448,22 +448,21 @@ public class AutoFaceEntity {
 
                     double distanceToHostileEntity = 0.0;
 
-                    try {
-
-                        // Find the closest hostile entity
+                    if (hostileEntities != null && !hostileEntities.isEmpty()) {
+                        // Find the closest hostile entity only when one actually exists.
                         Entity closestHostile = hostileEntities.stream()
                                 .min(Comparator.comparingDouble(e -> e.distanceToSqr(bot.position())))
-                                .orElseThrow(); // Use orElseThrow since empty case is already handled
+                                .orElse(null);
 
-                        distanceToHostileEntity = Math.sqrt(closestHostile.distanceToSqr(bot.position()));
+                        if (closestHostile != null) {
+                            distanceToHostileEntity = Math.sqrt(closestHostile.distanceToSqr(bot.position()));
 
-                        // Log details of the detected hostile entity
-                        System.out.println("Closest hostile entity: " + closestHostile.getName().getString()
-                                + " at distance: " + distanceToHostileEntity);
-
-                    } catch (Exception e) {
-                        System.out.println("An exception occurred while calculating detecting hostile entities nearby" + e.getMessage());
-                        System.out.println(e.getStackTrace());
+                            // Log details of the detected hostile entity
+                            System.out.println("Closest hostile entity: " + closestHostile.getName().getString()
+                                    + " at distance: " + distanceToHostileEntity);
+                        }
+                    } else {
+                        System.out.println("Danger zone detected with no hostile entities nearby.");
                     }
 
                     // first check if bot is moving, and if so, then stop moving.
@@ -475,7 +474,7 @@ public class AutoFaceEntity {
 
                         // Send message only once per threat encounter
                         if (!threatMessageSent) {
-                            ChatUtils.sendChatMessages(bot.createCommandSourceStack().withSuppressedOutput(), "Terminating all current tasks due to threat detections");
+                            ChatUtils.sendChatMessages(bot.createCommandSourceStack().withSuppressedOutput(), "Stopping current task because a danger zone was detected");
                             threatMessageSent = true;
                         }
                         server.getCommands().performPrefixedCommand(bot.createCommandSourceStack().withSuppressedOutput(), "/player " + bot.getName().getString() + " stop");
@@ -487,7 +486,7 @@ public class AutoFaceEntity {
 
                         // Send message only once per threat encounter
                         if (!threatMessageSent) {
-                            ChatUtils.sendChatMessages(bot.createCommandSourceStack().withSuppressedOutput(), "Terminating all current tasks due to threat detections");
+                            ChatUtils.sendChatMessages(bot.createCommandSourceStack().withSuppressedOutput(), "Stopping current task because a danger zone was detected");
                             threatMessageSent = true;
                         }
                         server.getCommands().performPrefixedCommand(bot.createCommandSourceStack().withSuppressedOutput(), "/player " + bot.getName().getString() + " stop");

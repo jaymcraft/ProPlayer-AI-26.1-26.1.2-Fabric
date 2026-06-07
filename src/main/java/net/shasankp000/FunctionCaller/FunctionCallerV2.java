@@ -2265,6 +2265,7 @@ public class FunctionCallerV2 {
         Direction doorwayDirection = bot.getDirection();
         Identifier blockId = BuiltInRegistries.BLOCK.getKey(wallBlock);
         List<BlockPos> blueprint = buildManualStructureBlueprint(origin, doorwayDirection, houseSize, buildingType);
+        Set<BlockPos> doorwayClearBlocks = buildDoorwayClearBlocks(origin, doorwayDirection, houseSize);
 
         AutoFaceEntity.setBotExecutingTask(true);
         ChatUtils.sendChatMessages(botSource, "Building a " + houseSize.width() + "x" + houseSize.depth()
@@ -2274,10 +2275,11 @@ public class FunctionCallerV2 {
             Set<BlockPos> blueprintBlocks = new HashSet<>(blueprint);
             Set<BlockPos> temporaryPillars = Collections.synchronizedSet(new LinkedHashSet<>());
             List<BlockPos> deferredBlocks = new ArrayList<>();
+            int skipped = 0;
             try {
                 for (BlockPos pos : blueprint) {
                     String placementResult = placeStructureBlockLikePlayer(bot, pos, blockId.toString(), temporaryPillars, blueprintBlocks).get(120, TimeUnit.SECONDS);
-                    if (placementResult.contains("Cannot place through blocks")) {
+                    if (shouldDeferStructureBlock(placementResult)) {
                         logger.info("Deferring blocked structure block {} for a later build pass", pos);
                         deferredBlocks.add(pos);
                         continue;
@@ -2299,28 +2301,44 @@ public class FunctionCallerV2 {
                     Thread.sleep(150L);
                 }
 
-                for (BlockPos pos : deferredBlocks) {
-                    String placementResult = placeStructureBlockLikePlayer(bot, pos, blockId.toString(), temporaryPillars, blueprintBlocks).get(120, TimeUnit.SECONDS);
-                    if (placementResult.startsWith("❌") || placementResult.startsWith("⚠️")) {
-                        String failure = "I had to stop building the " + buildingType.displayName() + ": " + placementResult;
-                        getFunctionOutput(failure);
-                        ChatUtils.sendChatMessages(botSource, failure);
-                        storeActionMemory("buildStructure", Map.of(
-                                "type", buildingType.displayName(),
-                                "blockType", blockId.toString(),
-                                "x", String.valueOf(origin.getX()),
-                                "y", String.valueOf(origin.getY()),
-                                "z", String.valueOf(origin.getZ())
-                        ), failure);
-                        return;
+                List<BlockPos> pendingBlocks = deferredBlocks;
+                for (int pass = 1; pass <= 4 && !pendingBlocks.isEmpty(); pass++) {
+                    List<BlockPos> nextPassBlocks = new ArrayList<>();
+                    for (BlockPos pos : pendingBlocks) {
+                        String placementResult = placeStructureBlockLikePlayer(bot, pos, blockId.toString(), temporaryPillars, blueprintBlocks).get(120, TimeUnit.SECONDS);
+                        if (shouldDeferStructureBlock(placementResult)) {
+                            if (pass < 4) {
+                                logger.info("Deferring structure block {} again after pass {} via {}", pos, pass, placementResult);
+                                nextPassBlocks.add(pos);
+                            } else {
+                                logger.info("Skipping temporarily unreachable structure block {} after deferred passes via {}", pos, placementResult);
+                                skipped++;
+                            }
+                            continue;
+                        }
+                        if (placementResult.startsWith("❌") || placementResult.startsWith("⚠️")) {
+                            String failure = "I had to stop building the " + buildingType.displayName() + ": " + placementResult;
+                            getFunctionOutput(failure);
+                            ChatUtils.sendChatMessages(botSource, failure);
+                            storeActionMemory("buildStructure", Map.of(
+                                    "type", buildingType.displayName(),
+                                    "blockType", blockId.toString(),
+                                    "x", String.valueOf(origin.getX()),
+                                    "y", String.valueOf(origin.getY()),
+                                    "z", String.valueOf(origin.getZ())
+                            ), failure);
+                            return;
+                        }
+                        placed++;
+                        Thread.sleep(150L);
                     }
-                    placed++;
-                    Thread.sleep(150L);
+                    pendingBlocks = nextPassBlocks;
                 }
 
                 String result = "Manually built a " + houseSize.width() + "x" + houseSize.depth()
                         + " " + buildingType.displayName() + " using " + blockId + " at x:" + origin.getX()
-                        + " y:" + origin.getY() + " z:" + origin.getZ() + ".";
+                        + " y:" + origin.getY() + " z:" + origin.getZ() + "."
+                        + (skipped > 0 ? " Skipped " + skipped + " temporarily unreachable blocks." : "");
                 getFunctionOutput(result);
                 storeActionMemory("buildStructure", Map.of(
                         "type", buildingType.displayName(),
@@ -2337,7 +2355,7 @@ public class FunctionCallerV2 {
                 logger.error("Failed to build {}", buildingType.displayName(), e);
                 ChatUtils.sendChatMessages(botSource, "I couldn't build the " + buildingType.displayName() + ": " + e.getMessage());
             } finally {
-                cleanupTemporaryPillars(bot, temporaryPillars, blueprintBlocks, blockId.toString());
+                cleanupTemporaryPillars(bot, temporaryPillars, doorwayClearBlocks, blockId.toString());
                 AutoFaceEntity.setBotExecutingTask(false);
             }
         });
@@ -2351,12 +2369,21 @@ public class FunctionCallerV2 {
                     return supportResult;
                 }
 
-                while (pos.getY() - bot.blockPosition().getY() > 3) {
-                    String pillarResult = pillarUpLikePlayer(bot, blockId, temporaryPillars, blueprintBlocks).get(10, TimeUnit.SECONDS);
-                    if (pillarResult.startsWith("❌") || pillarResult.startsWith("⚠️")) {
-                        return pillarResult;
+                if (!isHorizontallyCloseForStructureBuild(bot, pos)) {
+                    String moveResult = moveNearStructureTarget(bot, pos, blockId, temporaryPillars, blueprintBlocks);
+                    if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
+                        String scaffoldResult = scaffoldAndRetryMove(bot, pos, blockId, temporaryPillars, blueprintBlocks);
+                        if (scaffoldResult.startsWith("❌") || scaffoldResult.startsWith("⚠️")) {
+                            return scaffoldResult;
+                        }
                     }
-                    Thread.sleep(350L);
+                }
+
+                if (pos.getY() - bot.blockPosition().getY() > 3) {
+                    String climbResult = pillarTowardBuildHeight(bot, pos, blockId, temporaryPillars, blueprintBlocks, 6);
+                    if (climbResult.startsWith("❌") || climbResult.startsWith("⚠️")) {
+                        return climbResult;
+                    }
                 }
 
                 if (!isWithinPlacementRange(bot, pos)) {
@@ -2386,9 +2413,9 @@ public class FunctionCallerV2 {
                     return "✅ Target already contains " + blockId + " at " + pos;
                 }
                 if (placementResult.contains("Cannot place through blocks") && pos.getY() > bot.blockPosition().getY()) {
-                    String pillarResult = pillarUpLikePlayer(bot, blockId, temporaryPillars, blueprintBlocks).get(10, TimeUnit.SECONDS);
-                    if (pillarResult.startsWith("❌") || pillarResult.startsWith("⚠️")) {
-                        return pillarResult;
+                    String scaffoldResult = scaffoldAndRetryMove(bot, pos, blockId, temporaryPillars, blueprintBlocks);
+                    if (scaffoldResult.startsWith("❌") || scaffoldResult.startsWith("⚠️")) {
+                        return scaffoldResult;
                     }
                     Thread.sleep(350L);
                     placementResult = tryPlaceFromNearbyAngles(bot, pos, blockId, temporaryPillars, blueprintBlocks, placementResult);
@@ -2426,23 +2453,62 @@ public class FunctionCallerV2 {
         return placementResult != null && placementResult.contains("Too far from target position");
     }
 
+    private static boolean isHorizontallyCloseForStructureBuild(ServerPlayer bot, BlockPos targetPos) {
+        BlockPos botPos = bot.blockPosition();
+        return isHorizontallyCloseForStructureBuild(botPos, targetPos);
+    }
+
+    private static boolean isHorizontallyCloseForStructureBuild(BlockPos botPos, BlockPos targetPos) {
+        int dx = Math.abs(botPos.getX() - targetPos.getX());
+        int dz = Math.abs(botPos.getZ() - targetPos.getZ());
+        return Math.max(dx, dz) <= 3;
+    }
+
+    private static boolean shouldDeferStructureBlock(String placementResult) {
+        if (placementResult == null) {
+            return false;
+        }
+
+        return placementResult.contains("Cannot place through blocks")
+                || placementResult.contains("Movement blocked by a solid block")
+                || placementResult.contains("Too far from target position")
+                || placementResult.contains("Could not move closer to target")
+                || placementResult.contains("Scaffold placed; retry later");
+    }
+
     private static String recoverTooFarPlacement(ServerPlayer bot, BlockPos targetPos, String blockId, Set<BlockPos> temporaryPillars, Set<BlockPos> blueprintBlocks, String originalResult) throws Exception {
         removeLastTemporaryPillar(bot, temporaryPillars, blueprintBlocks, blockId);
 
         List<BlockPos> candidates = findNearbyBuilderPositions(bot, targetPos);
-        for (BlockPos candidate : candidates) {
-            String moveResult = startPreciseCoordinateMove(candidate.getX(), candidate.getY(), candidate.getZ(), true)
-                    .get(120, TimeUnit.SECONDS);
+        int maxCandidates = Math.min(candidates.size(), 5);
+        int consecutiveFailures = 0;
+        for (int i = 0; i < maxCandidates; i++) {
+            BlockPos candidate = candidates.get(i);
+            String moveResult = moveToStructureBuilderPosition(bot, candidate);
             logger.info("Trying closer build position {} for target {} after reach failure via {}", candidate, targetPos, moveResult);
             if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
+                String bridgeResult = bridgeTowardTarget(bot, targetPos, blockId, temporaryPillars, blueprintBlocks);
+                if (!bridgeResult.startsWith("❌") && !bridgeResult.startsWith("⚠️")) {
+                    String retryResult = BlockPlacementTool.placeBlock(bot, targetPos, blockId).get(10, TimeUnit.SECONDS);
+                    if (!isTooFarPlacementResult(retryResult)) {
+                        return retryResult;
+                    }
+                }
+
+                consecutiveFailures++;
+                if (consecutiveFailures >= 3) {
+                    logger.info("Aborting recoverTooFarPlacement for {}: {} consecutive movement failures", targetPos, consecutiveFailures);
+                    break;
+                }
                 continue;
             }
+            consecutiveFailures = 0;
 
-            String scaffoldResult = pillarUpLikePlayer(bot, blockId, temporaryPillars, blueprintBlocks).get(10, TimeUnit.SECONDS);
+            String scaffoldResult = pillarTowardBuildHeight(bot, targetPos, blockId, temporaryPillars, blueprintBlocks, 4);
             if (scaffoldResult.startsWith("❌") || scaffoldResult.startsWith("⚠️")) {
                 logger.info("Could not create closer scaffold for {}: {}", targetPos, scaffoldResult);
             } else {
-                Thread.sleep(350L);
+                Thread.sleep(150L);
             }
 
             String retryResult = BlockPlacementTool.placeBlock(bot, targetPos, blockId).get(10, TimeUnit.SECONDS);
@@ -2452,6 +2518,50 @@ public class FunctionCallerV2 {
         }
 
         return originalResult;
+    }
+
+    private static String bridgeTowardTarget(ServerPlayer bot, BlockPos targetPos, String blockId, Set<BlockPos> temporaryPillars, Set<BlockPos> blueprintBlocks) throws Exception {
+        for (int step = 0; step < 3 && !isWithinPlacementRange(bot, targetPos); step++) {
+            BlockPos currentFeet = bot.blockPosition();
+            int dx = Integer.compare(targetPos.getX(), currentFeet.getX());
+            int dz = Integer.compare(targetPos.getZ(), currentFeet.getZ());
+            if (Math.abs(targetPos.getX() - currentFeet.getX()) >= Math.abs(targetPos.getZ() - currentFeet.getZ())) {
+                dz = 0;
+            } else {
+                dx = 0;
+            }
+            if (dx == 0 && dz == 0) {
+                return "✅ Already close enough to target";
+            }
+
+            BlockPos nextFeet = currentFeet.offset(dx, 0, dz);
+            BlockPos floorPos = nextFeet.below();
+            ServerLevel world = (ServerLevel) bot.level();
+            BlockState floorState = world.getBlockState(floorPos);
+            if (floorState.isAir() || floorState.canBeReplaced()) {
+                String floorResult = BlockPlacementTool.placeBlock(bot, floorPos, blockId).get(10, TimeUnit.SECONDS);
+                if (isAlreadyPlacedTarget(bot, floorPos, blockId, floorResult)) {
+                    floorResult = "✅ Scaffold floor already exists";
+                }
+                if (floorResult.startsWith("❌") || floorResult.startsWith("⚠️")) {
+                    return floorResult;
+                }
+                if (!blueprintBlocks.contains(floorPos)) {
+                    temporaryPillars.add(floorPos);
+                }
+                Thread.sleep(150L);
+            }
+
+            String moveResult = moveToStructureBuilderPosition(bot, nextFeet);
+            logger.info("Bridged toward build target {} via {} then moved via {}", targetPos, floorPos, moveResult);
+            if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
+                return moveResult;
+            }
+        }
+
+        return isWithinPlacementRange(bot, targetPos)
+                ? "✅ Bridged close enough to target"
+                : "❌ Still too far after bridging toward target";
     }
 
     private static void removeLastTemporaryPillar(ServerPlayer bot, Set<BlockPos> temporaryPillars, Set<BlockPos> blueprintBlocks, String blockId) {
@@ -2483,33 +2593,85 @@ public class FunctionCallerV2 {
 
     private static String moveNearStructureTarget(ServerPlayer bot, BlockPos targetPos, String blockId, Set<BlockPos> temporaryPillars, Set<BlockPos> blueprintBlocks) throws Exception {
         BlockPos nearby = chooseVisibleBuilderPosition(bot, targetPos).orElseGet(() -> chooseBuilderPosition(bot, targetPos));
-        String moveResult = startPreciseCoordinateMove(nearby.getX(), nearby.getY(), nearby.getZ(), true)
-                .get(120, TimeUnit.SECONDS);
+        String moveResult = moveToStructureBuilderPosition(bot, nearby);
         logger.info("Moved near structure placement target {} via {}", targetPos, moveResult);
         return moveResult;
     }
 
-    private static String scaffoldAndRetryMove(ServerPlayer bot, BlockPos targetPos, String blockId, Set<BlockPos> temporaryPillars, Set<BlockPos> blueprintBlocks) throws Exception {
-        String pillarResult = pillarUpLikePlayer(bot, blockId, temporaryPillars, blueprintBlocks).get(10, TimeUnit.SECONDS);
-        if (pillarResult.startsWith("❌") || pillarResult.startsWith("⚠️")) {
-            return pillarResult;
+    private static String moveToStructureBuilderPosition(ServerPlayer bot, BlockPos targetPos) throws Exception {
+        BlockPos currentPos = bot.blockPosition();
+        if (targetPos.getY() < currentPos.getY() - 1) {
+            return "⚠️ Builder position is too far below current scaffold";
         }
-        Thread.sleep(350L);
+        if (targetPos.getY() > currentPos.getY() + 1 && currentPos.distManhattan(targetPos) > 1) {
+            return "⚠️ Builder position is too high to step to safely";
+        }
 
+        return startPreciseCoordinateMove(targetPos.getX(), targetPos.getY(), targetPos.getZ(), true)
+                .get(120, TimeUnit.SECONDS);
+    }
+
+    private static String scaffoldAndRetryMove(ServerPlayer bot, BlockPos targetPos, String blockId, Set<BlockPos> temporaryPillars, Set<BlockPos> blueprintBlocks) throws Exception {
+        removeLastTemporaryPillar(bot, temporaryPillars, blueprintBlocks, blockId);
         List<BlockPos> candidates = findNearbyBuilderPositions(bot, targetPos);
-        for (BlockPos candidate : candidates) {
-            if (candidate.getY() < bot.blockPosition().getY()) {
+        int maxCandidates = Math.min(candidates.size(), 5);
+        int consecutiveFailures = 0;
+        boolean triedAny = false;
+        BlockPos currentPos = bot.blockPosition();
+        for (int i = 0; i < maxCandidates; i++) {
+            BlockPos candidate = candidates.get(i);
+            if (candidate.getY() < currentPos.getY() - 1) {
                 continue;
             }
-            String moveResult = startPreciseCoordinateMove(candidate.getX(), candidate.getY(), candidate.getZ(), true)
-                    .get(120, TimeUnit.SECONDS);
+            triedAny = true;
+            String moveResult = moveToStructureBuilderPosition(bot, candidate);
             logger.info("Trying scaffolded build move {} for target {} via {}", candidate, targetPos, moveResult);
-            if (!moveResult.startsWith("❌") && !moveResult.startsWith("⚠️")) {
-                return moveResult;
+            if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
+                String bridgeResult = bridgeTowardTarget(bot, targetPos, blockId, temporaryPillars, blueprintBlocks);
+                logger.info("Trying bridge toward closer scaffold for target {} via {}", targetPos, bridgeResult);
+                if (bridgeResult.startsWith("❌") || bridgeResult.startsWith("⚠️")) {
+                    consecutiveFailures++;
+                    if (consecutiveFailures >= 3) {
+                        logger.info("Aborting scaffolded build move for {}: {} consecutive movement failures", targetPos, consecutiveFailures);
+                        break;
+                    }
+                    continue;
+                }
             }
+
+            consecutiveFailures = 0;
+            if (isWithinPlacementRange(bot, targetPos) && targetPos.getY() - bot.blockPosition().getY() <= 3) {
+                return "✅ Moved to closer scaffold position";
+            }
+
+            if (targetPos.getY() > bot.blockPosition().getY()) {
+                String pillarResult = pillarTowardBuildHeight(bot, targetPos, blockId, temporaryPillars, blueprintBlocks, 6);
+                if (pillarResult.startsWith("❌") || pillarResult.startsWith("⚠️")) {
+                    logger.info("Could not pillar at closer scaffold for target {}: {}", targetPos, pillarResult);
+                    continue;
+                }
+                Thread.sleep(150L);
+                return "✅ Built a closer scaffold pillar to useful height for target " + targetPos;
+            }
+
+            return "✅ Moved closer to target " + targetPos;
         }
 
-        return "✅ Scaffold placed; continuing from current position";
+        if (isWithinPlacementRange(bot, targetPos)) {
+            if (targetPos.getY() > bot.blockPosition().getY() && isHorizontallyCloseForStructureBuild(bot, targetPos)) {
+                String pillarResult = pillarTowardBuildHeight(bot, targetPos, blockId, temporaryPillars, blueprintBlocks, 6);
+                if (pillarResult.startsWith("❌") || pillarResult.startsWith("⚠️")) {
+                    return pillarResult;
+                }
+                Thread.sleep(150L);
+            }
+            return "✅ Scaffold placed; continuing from current position";
+        }
+
+        if (!triedAny) {
+            logger.info("Scaffolded target {} but no higher safe builder positions were available yet", targetPos);
+        }
+        return "⚠️ Scaffold placed; retry later for target " + targetPos;
     }
 
     private static Optional<BlockPos> chooseVisibleBuilderPosition(ServerPlayer bot, BlockPos targetPos) {
@@ -2526,10 +2688,12 @@ public class FunctionCallerV2 {
             candidates = findNearbyBuilderPositions(bot, targetPos);
         }
 
-        for (BlockPos candidate : candidates) {
+        int maxCandidates = Math.min(candidates.size(), 5);
+        int consecutiveFailures = 0;
+        for (int i = 0; i < maxCandidates; i++) {
+            BlockPos candidate = candidates.get(i);
             if (bot.blockPosition().distManhattan(candidate) > 0) {
-                String moveResult = startPreciseCoordinateMove(candidate.getX(), candidate.getY(), candidate.getZ(), true)
-                        .get(120, TimeUnit.SECONDS);
+                String moveResult = moveToStructureBuilderPosition(bot, candidate);
                 logger.info("Trying alternate build angle {} for target {} via {}", candidate, targetPos, moveResult);
                 if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
                     String scaffoldResult = scaffoldAndRetryMove(bot, targetPos, blockId, temporaryPillars, blueprintBlocks);
@@ -2540,8 +2704,14 @@ public class FunctionCallerV2 {
                     }
                 }
                 if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
+                    consecutiveFailures++;
+                    if (consecutiveFailures >= 3) {
+                        logger.info("Aborting alternate build angles for {}: {} consecutive movement failures", targetPos, consecutiveFailures);
+                        break;
+                    }
                     continue;
                 }
+                consecutiveFailures = 0;
             }
 
             String retryResult = BlockPlacementTool.placeBlock(bot, targetPos, blockId).get(10, TimeUnit.SECONDS);
@@ -2584,7 +2754,7 @@ public class FunctionCallerV2 {
                     int candidateY = findStandableBuilderY(world, candidateX, candidateZ, currentPos.getY());
                     BlockPos candidate = new BlockPos(candidateX, candidateY, candidateZ);
                     Vec3 candidatePosition = new Vec3(candidateX + 0.5, candidateY, candidateZ + 0.5);
-                    if (!canBotOccupy(bot, candidatePosition) || Math.sqrt(targetPos.distToCenterSqr(candidatePosition)) > 3.75) {
+                    if (!canBotOccupy(bot, candidatePosition) || !isHorizontallyCloseForStructureBuild(candidate, targetPos)) {
                         continue;
                     }
 
@@ -2658,18 +2828,17 @@ public class FunctionCallerV2 {
 
         if (!isWithinPlacementRange(bot, supportPos)) {
             BlockPos nearby = chooseBuilderPosition(bot, supportPos);
-            String moveResult = startPreciseCoordinateMove(nearby.getX(), nearby.getY(), nearby.getZ(), true).get(120, TimeUnit.SECONDS);
+            String moveResult = moveToStructureBuilderPosition(bot, nearby);
             if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
                 return moveResult;
             }
         }
 
-        while (supportPos.getY() - bot.blockPosition().getY() > 3) {
-            String pillarResult = pillarUpLikePlayer(bot, blockId, temporaryPillars, blueprintBlocks).get(10, TimeUnit.SECONDS);
-            if (pillarResult.startsWith("❌") || pillarResult.startsWith("⚠️")) {
-                return pillarResult;
+        if (supportPos.getY() - bot.blockPosition().getY() > 3) {
+            String climbResult = pillarTowardBuildHeight(bot, supportPos, blockId, temporaryPillars, blueprintBlocks, 6);
+            if (climbResult.startsWith("❌") || climbResult.startsWith("⚠️")) {
+                return climbResult;
             }
-            Thread.sleep(350L);
         }
 
         String result = BlockPlacementTool.placeBlock(bot, supportPos, blockId).get(10, TimeUnit.SECONDS);
@@ -2694,6 +2863,29 @@ public class FunctionCallerV2 {
         BlockPos belowPos = targetPos.below();
         BlockState belowState = world.getBlockState(belowPos);
         return !belowState.isAir() && belowState.isRedstoneConductor(world, belowPos);
+    }
+
+    private static String pillarTowardBuildHeight(ServerPlayer bot, BlockPos targetPos, String blockId, Set<BlockPos> temporaryPillars, Set<BlockPos> blueprintBlocks, int maxSteps) throws Exception {
+        int steps = 0;
+        String lastResult = "✅ Already high enough";
+        while (targetPos.getY() - bot.blockPosition().getY() > 3 && steps < maxSteps) {
+            if (!isHorizontallyCloseForStructureBuild(bot, targetPos)) {
+                return "⚠️ Scaffold placed; retry later for target " + targetPos;
+            }
+
+            lastResult = pillarUpLikePlayer(bot, blockId, temporaryPillars, blueprintBlocks).get(10, TimeUnit.SECONDS);
+            if (lastResult.startsWith("❌") || lastResult.startsWith("⚠️")) {
+                return lastResult;
+            }
+            steps++;
+            Thread.sleep(350L);
+        }
+
+        if (targetPos.getY() - bot.blockPosition().getY() > 3) {
+            return "⚠️ Scaffold placed; retry later for target " + targetPos;
+        }
+
+        return steps > 0 ? "✅ Pillared " + steps + " blocks toward target " + targetPos : lastResult;
     }
 
     private static CompletableFuture<String> pillarUpLikePlayer(ServerPlayer bot, String blockId, Set<BlockPos> temporaryPillars, Set<BlockPos> blueprintBlocks) {
@@ -2730,13 +2922,14 @@ public class FunctionCallerV2 {
         return result != null && result.startsWith("✅");
     }
 
-    private static void cleanupTemporaryPillars(ServerPlayer bot, Set<BlockPos> temporaryPillars, Set<BlockPos> blueprintBlocks, String blockId) {
-        if (temporaryPillars.isEmpty()) {
+    private static void cleanupTemporaryPillars(ServerPlayer bot, Set<BlockPos> temporaryPillars, Set<BlockPos> doorwayClearBlocks, String blockId) {
+        if (temporaryPillars.isEmpty() && doorwayClearBlocks.isEmpty()) {
             return;
         }
 
         List<BlockPos> cleanupOrder = new ArrayList<>(temporaryPillars);
-        cleanupOrder.removeIf(blueprintBlocks::contains);
+        cleanupOrder.addAll(doorwayClearBlocks);
+        cleanupOrder = uniqueBlockList(cleanupOrder);
         cleanupOrder.sort(Comparator.comparingInt((BlockPos pos) -> pos.getY()).reversed());
 
         int removed = 0;
@@ -2751,15 +2944,20 @@ public class FunctionCallerV2 {
 
                 if (!isWithinPlacementRange(bot, pillarPos)) {
                     BlockPos nearby = chooseBuilderPosition(bot, pillarPos);
-                    String moveResult = startPreciseCoordinateMove(nearby.getX(), nearby.getY(), nearby.getZ(), true).get(120, TimeUnit.SECONDS);
+                    String moveResult = moveToStructureBuilderPosition(bot, nearby);
                     if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
                         logger.warn("Cleanup movement to {} was blocked; trying to mine temporary pillar from current position: {}", pillarPos, moveResult);
                     }
                 }
 
                 String mineResult = MiningTool.mineBlock(bot, pillarPos).get(10, TimeUnit.SECONDS);
-                logger.info("Cleaned temporary build pillar {} via {}", pillarPos, mineResult);
-                removed++;
+                BlockState afterMineState = world.getBlockState(pillarPos);
+                if (afterMineState.isAir() || afterMineState.canBeReplaced()) {
+                    logger.info("Cleaned temporary build pillar {} via {}", pillarPos, mineResult);
+                    removed++;
+                } else {
+                    logger.warn("Temporary build pillar {} was not removed via {}", pillarPos, mineResult);
+                }
                 Thread.sleep(100L);
             } catch (Exception e) {
                 logger.warn("Could not clean temporary build pillar {}", pillarPos, e);
@@ -2906,6 +3104,25 @@ public class FunctionCallerV2 {
         }
 
         return blocks;
+    }
+
+    private static Set<BlockPos> buildDoorwayClearBlocks(BlockPos origin, Direction doorwayDirection, HouseSize houseSize) {
+        int minX = -houseSize.width() / 2;
+        int maxX = minX + houseSize.width() - 1;
+        int minZ = -houseSize.depth() / 2;
+        int maxZ = minZ + houseSize.depth() - 1;
+        BlockPos doorway = switch (doorwayDirection) {
+            case NORTH -> origin.offset(0, 0, minZ);
+            case SOUTH -> origin.offset(0, 0, maxZ);
+            case EAST -> origin.offset(maxX, 0, 0);
+            case WEST -> origin.offset(minX, 0, 0);
+            default -> origin.offset(0, 0, minZ);
+        };
+
+        Set<BlockPos> clearBlocks = new LinkedHashSet<>();
+        clearBlocks.add(doorway);
+        clearBlocks.add(doorway.above());
+        return clearBlocks;
     }
 
     private static List<BlockPos> buildCastleBlueprint(BlockPos origin, Direction doorwayDirection, HouseSize houseSize) {
