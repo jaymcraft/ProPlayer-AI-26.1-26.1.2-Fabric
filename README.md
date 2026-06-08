@@ -1,43 +1,7 @@
+i forked this project to 26.1                                                                                                                 
 # Official website
 
 https://shasankp000.github.io/AI-Player-Website/
-
----
-
-## Stargazers over time
-[![Stargazers over time](https://starchart.cc/shasankp000/AI-Player.svg?variant=adaptive)](https://starchart.cc/shasankp000/AI-Player)
-
----
-
-# Read this section please.
-
-This project so far is the result of thousands of hours of endless reasearch, trials and errors, and just the simple goal of eliminating loneliness from minecraft as much as possible.
-If you liked my work, please consider donating so that I can continue to work on this project in peace and can actually prove to my parents that my work is making a difference. (Also not having to ask for pocket money from mom).
-
-Just know that I won't ever give up on this project.
-
-[!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://buymeacoffee.com/shasankp000)
-
-I also have started accepting payments and donations in cryptocurrencies.
-
-Ethereum: 0x47014CC9F8054593027c53996ddfDFa4ca8a5271
-
-Bitcoin: bc1qae6u7rqv0pmppxmr2uqfftrj4p6c7hmm3m39r5
-
-Solana: 3U3bXZJ2NrMV9FmkaotvPaNwWthg68sRqvstJwanyhcU
-
-Polygon Network (USDC or any other polygon based coins): 0x47014CC9F8054593027c53996ddfDFa4ca8a5271
-
-Any amount would help :)
-
----
-# Also, THIS!
-
-NLP pipeline training in-depth information : https://github.com/shasankp000/NLP_2.0_pipeline
-
-Website repo: https://github.com/shasankp000/AI-Player-Website
-
----
 
 # Project description
 
