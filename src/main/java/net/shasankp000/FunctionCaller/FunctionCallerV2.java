@@ -37,10 +37,14 @@ import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.item.Item;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.Items;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.BlockHitResult;
+import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import net.shasankp000.AIPlayer;
 
@@ -69,6 +73,8 @@ import net.shasankp000.PathFinding.GoTo;
 import net.shasankp000.PathFinding.PathTracer;
 
 import net.shasankp000.PlayerUtils.*;
+import net.shasankp000.FilingSystem.LLMClientFactory;
+import net.shasankp000.FilingSystem.LLMProviderConfig;
 import net.shasankp000.ServiceLLMClients.LLMClient;
 
 import net.shasankp000.WebSearch.WebSearchTool;
@@ -118,6 +124,30 @@ public class FunctionCallerV2 {
     private static final Set<String> CRAFT_FILLER_WORDS = Set.of(
             "a", "an", "the", "some", "one", "me", "for", "please", "item", "items", "batch", "batches"
     );
+
+    private static String sendConfiguredPrompt(String systemPrompt, String userPrompt) throws IOException, InterruptedException {
+        String provider = LLMProviderConfig.getConfiguredProvider();
+        if (!LLMProviderConfig.isOllama(provider)) {
+            LLMClient client = LLMClientFactory.createClient(provider);
+            if (client == null) {
+                throw new IllegalStateException("Cannot initialize " + provider + " provider. Check API URL, API key, and selected model.");
+            }
+            return client.sendPrompt(systemPrompt, userPrompt);
+        }
+
+        List<OllamaChatMessage> messages = new ArrayList<>();
+        messages.add(new OllamaChatMessage(OllamaChatMessageRole.SYSTEM, systemPrompt));
+        messages.add(new OllamaChatMessage(OllamaChatMessageRole.USER, userPrompt));
+
+        net.shasankp000.OllamaClient.OllamaThinkingResponse thinkingResponse =
+                net.shasankp000.OllamaClient.OllamaAPIHelper.smartChat(
+                        ollamaAPI,
+                        "http://localhost:11434",
+                        net.shasankp000.AIPlayer.CONFIG.getSelectedLanguageModel(),
+                        messages
+                );
+        return thinkingResponse.getContent();
+    }
 
     private record MiningTarget(BlockPos blockPos, BlockPos standPos) {}
 
@@ -279,21 +309,7 @@ public class FunctionCallerV2 {
                     "Please analyze the situation and generate an appropriate action pipeline. " +
                     "Consider the bot's current state and surroundings carefully.";
 
-                String response;
-
-                // Use Ollama for LLM fallback
-                List<OllamaChatMessage> messages = new ArrayList<>();
-                messages.add(new OllamaChatMessage(OllamaChatMessageRole.SYSTEM, fullSystemPrompt));
-                messages.add(new OllamaChatMessage(OllamaChatMessageRole.USER, userPrompt));
-
-                net.shasankp000.OllamaClient.OllamaThinkingResponse thinkingResponse =
-                        net.shasankp000.OllamaClient.OllamaAPIHelper.smartChat(
-                                ollamaAPI,
-                                "http://localhost:11434",
-                                net.shasankp000.AIPlayer.CONFIG.getSelectedLanguageModel(),
-                                messages
-                        );
-                response = thinkingResponse.getContent();
+                String response = sendConfiguredPrompt(fullSystemPrompt, userPrompt);
 
                 logger.info("[planner] Raw LLM response: {}", response);
 
@@ -924,19 +940,7 @@ public class FunctionCallerV2 {
         \s
         \s""";
         try {
-            List<OllamaChatMessage> messages = new java.util.ArrayList<>();
-            messages.add(new OllamaChatMessage(OllamaChatMessageRole.SYSTEM, sysPrompt));
-            messages.add(new OllamaChatMessage(OllamaChatMessageRole.USER, "Player prompt: " + userPrompt));
-
-            net.shasankp000.OllamaClient.OllamaThinkingResponse thinkingResponse =
-                    net.shasankp000.OllamaClient.OllamaAPIHelper.smartChat(
-                            ollamaAPI,
-                            "http://localhost:11434",
-                            net.shasankp000.AIPlayer.CONFIG.getSelectedLanguageModel(),
-                            messages
-                    );
-
-            contextOutput = thinkingResponse.getContent();
+            contextOutput = sendConfiguredPrompt(sysPrompt, "Player prompt: " + userPrompt);
         } catch (IOException | InterruptedException | JsonSyntaxException e) {
             logger.error("{}", (Object) e.getStackTrace());
         }
@@ -1033,19 +1037,7 @@ public class FunctionCallerV2 {
         String botContext = buildLLMBotContext(initialState, sharedState, surroundings);
         String fullSystemPrompt = systemPrompt + "\n\nBot's context information:\n" + botContext;
         try {
-            List<OllamaChatMessage> messages = new java.util.ArrayList<>();
-            messages.add(new OllamaChatMessage(OllamaChatMessageRole.SYSTEM, fullSystemPrompt));
-            messages.add(new OllamaChatMessage(OllamaChatMessageRole.USER, userPrompt));
-
-            net.shasankp000.OllamaClient.OllamaThinkingResponse thinkingResponse =
-                    net.shasankp000.OllamaClient.OllamaAPIHelper.smartChat(
-                            ollamaAPI,
-                            "http://localhost:11434",
-                            net.shasankp000.AIPlayer.CONFIG.getSelectedLanguageModel(),
-                            messages
-                    );
-
-            response = thinkingResponse.getContent();
+            response = sendConfiguredPrompt(fullSystemPrompt, userPrompt);
             logger.info("Raw LLM Response: {}", response);
             String cleanedResponse = stripThinkBlock(response);
             String jsonPart = extractJson(cleanedResponse);
@@ -1557,8 +1549,8 @@ public class FunctionCallerV2 {
             case "Overworld setup" -> executeOverworldSetupStage(bot, inventory);
             case "Stone tools" -> executeStoneToolsStage(bot, inventory);
             case "Iron route" -> executeIronRouteStage(bot, inventory);
-            case "Portal prep" -> "WAIT:I need portal automation next: bucket use, water/lava pickup, and Nether portal construction. I can keep gathering blocks/tools meanwhile.";
-            case "Enter Nether" -> "WAIT:I have Nether prep, but portal building/lighting automation is not fully implemented yet.";
+            case "Portal prep" -> executePortalPrepStage(bot, inventory);
+            case "Enter Nether" -> executeEnterNetherStage(bot, inventory);
             case "Blaze rods" -> "WAIT:I need Nether fortress navigation and blaze combat automation before I can collect blaze rods reliably.";
             case "Ender pearls" -> "WAIT:I need piglin barter/enderman hunting automation before I can collect pearls reliably.";
             case "Eyes of ender" -> executeEyesOfEnderStage(bot, inventory);
@@ -1696,6 +1688,9 @@ public class FunctionCallerV2 {
         if (!pickaxeResult.equals("OK")) {
             return pickaxeResult;
         }
+        if (!hasBucket || !hasIronPickaxe) {
+            ChatUtils.sendChatMessages(botSource, "I have the route materials, but need enough spare ingots to craft bucket and iron pickaxe.");
+        }
         ChatUtils.sendChatMessages(botSource, "Searching for iron ore and mining a tunnel toward it if needed.");
         String exposedResult = searchMoveAndMineFirst(bot, ironOreTypes, "iron ore");
         if (!exposedResult.startsWith("WAIT:")) {
@@ -1703,6 +1698,88 @@ public class FunctionCallerV2 {
         }
 
         return tunnelToAndMineOre(bot, inventory, ironOreTypes, "iron ore");
+    }
+
+    private static String executePortalPrepStage(ServerPlayer bot, Inventory inventory) throws Exception {
+        if (!hasItemByPath(inventory, "bucket")
+                && !hasItemByPath(inventory, "water_bucket")
+                && !hasItemByPath(inventory, "lava_bucket")) {
+            if (countItemByPath(inventory, "iron_ingot") >= 3) {
+                return craftItemOnServerThreadSync(bot, "bucket", 1);
+            }
+            return "WAIT:I need a bucket before I can collect water or lava for portal routing.";
+        }
+
+        if (hasItemByPath(inventory, "water_bucket") || hasItemByPath(inventory, "lava_bucket")) {
+            return "Portal prep complete: bucket has fluid for portal routing.";
+        }
+
+        String waterResult = collectFluidWithBucket(bot, Blocks.WATER, "water");
+        if (!waterResult.startsWith("WAIT:") && !waterResult.startsWith("❌") && !waterResult.startsWith("⚠️")) {
+            return waterResult;
+        }
+
+        String lavaResult = collectFluidWithBucket(bot, Blocks.LAVA, "lava");
+        if (!lavaResult.startsWith("WAIT:") && !lavaResult.startsWith("❌") && !lavaResult.startsWith("⚠️")) {
+            return lavaResult;
+        }
+
+        return "WAIT:I have a bucket, but I couldn't find reachable water or lava nearby yet.";
+    }
+
+    private static String executeEnterNetherStage(ServerPlayer bot, Inventory inventory) throws Exception {
+        if (bot.level().dimension().toString().contains("nether")) {
+            return "Already in the Nether.";
+        }
+
+        Optional<BlockPos> existingPortal = findNearestNetherPortal(bot, 16);
+        if (existingPortal.isPresent()) {
+            return enterPortalAt(bot, existingPortal.get());
+        }
+
+        int obsidian = countItemByPath(inventory, "obsidian");
+        if (obsidian < 10) {
+            return "WAIT:I can handle bucket pickup and portal frame construction now, but I need 10 obsidian in inventory before building. Lava-pool casting is the next upgrade.";
+        }
+
+        if (!hasItemByPath(inventory, "flint_and_steel") && !hasItemByPath(inventory, "fire_charge")) {
+            if (hasItemByPath(inventory, "flint") && countItemByPath(inventory, "iron_ingot") >= 1) {
+                return craftItemOnServerThreadSync(bot, "flint_and_steel", 1);
+            }
+            return "WAIT:I have obsidian for a portal frame, but I need flint and steel or a fire charge to light it.";
+        }
+
+        Direction facing = bot.getDirection();
+        PortalBuildPlan plan = choosePortalBuildPlan(bot, facing).orElse(null);
+        if (plan == null) {
+            return "WAIT:I couldn't find a clear, standable space nearby for a Nether portal frame.";
+        }
+
+        Set<BlockPos> frameBlocks = new LinkedHashSet<>(plan.frameBlocks());
+        Set<BlockPos> temporaryPillars = Collections.synchronizedSet(new LinkedHashSet<>());
+        int placed = 0;
+        for (BlockPos framePos : plan.frameBlocks()) {
+            String placeResult = placeStructureBlockLikePlayer(bot, framePos, "minecraft:obsidian", temporaryPillars, frameBlocks).get(120, TimeUnit.SECONDS);
+            if (shouldDeferStructureBlock(placeResult)) {
+                Thread.sleep(250L);
+                placeResult = placeStructureBlockLikePlayer(bot, framePos, "minecraft:obsidian", temporaryPillars, frameBlocks).get(120, TimeUnit.SECONDS);
+            }
+            if (placeResult.startsWith("❌") || placeResult.startsWith("⚠️")) {
+                cleanupTemporaryPillars(bot, temporaryPillars, Collections.emptySet(), "minecraft:obsidian");
+                return "WAIT:I started the portal frame, but couldn't place obsidian at " + framePos + ": " + placeResult;
+            }
+            placed++;
+            Thread.sleep(150L);
+        }
+
+        String lightResult = lightNetherPortal(bot, plan);
+        cleanupTemporaryPillars(bot, temporaryPillars, Collections.emptySet(), "minecraft:obsidian");
+        if (lightResult.startsWith("❌") || lightResult.startsWith("⚠️") || lightResult.startsWith("WAIT:")) {
+            return lightResult;
+        }
+
+        String enterResult = enterPortalAt(bot, plan.innerBlocks().getFirst());
+        return "Built and lit Nether portal with " + placed + " obsidian blocks. " + enterResult;
     }
 
     private static String tunnelToAndMineOre(ServerPlayer bot, Inventory inventory, List<String> oreTypes, String label) throws Exception {
@@ -2279,6 +2356,283 @@ public class FunctionCallerV2 {
         return matches;
     }
 
+    private static String collectFluidWithBucket(ServerPlayer bot, Block fluidBlock, String label) throws Exception {
+        List<BlockPos> candidates = findNearestFluidSources(bot, fluidBlock, 64, 24, 24);
+        if (candidates.isEmpty()) {
+            return "WAIT:I couldn't find nearby " + label + " source blocks yet.";
+        }
+
+        for (BlockPos sourcePos : candidates) {
+            String moveResult = moveToInteractionPosition(bot, sourcePos);
+            if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
+                logger.info("Could not reach {} source at {} via {}", label, sourcePos, moveResult);
+                continue;
+            }
+
+            String pickupResult = useBucketOnBlockSync(bot, sourcePos, Items.BUCKET, label + " source");
+            if (pickupResult.startsWith("✅")) {
+                return "Collected " + label + " with bucket at " + sourcePos + ".";
+            }
+            logger.info("Could not pick up {} at {} via {}", label, sourcePos, pickupResult);
+        }
+
+        return "WAIT:I found " + label + ", but couldn't reach or pick up a source block yet.";
+    }
+
+    private static List<BlockPos> findNearestFluidSources(ServerPlayer bot, Block fluidBlock, int horizontalRadius, int verticalDown, int verticalUp) {
+        ServerLevel world = (ServerLevel) bot.level();
+        BlockPos origin = bot.blockPosition();
+        List<BlockPos> matches = new ArrayList<>();
+
+        for (int dx = -horizontalRadius; dx <= horizontalRadius; dx++) {
+            for (int dz = -horizontalRadius; dz <= horizontalRadius; dz++) {
+                if (dx * dx + dz * dz > horizontalRadius * horizontalRadius) {
+                    continue;
+                }
+                for (int dy = -verticalDown; dy <= verticalUp; dy++) {
+                    BlockPos pos = origin.offset(dx, dy, dz);
+                    BlockState state = world.getBlockState(pos);
+                    if (state.is(fluidBlock) && state.getFluidState().isSource()) {
+                        matches.add(pos);
+                    }
+                }
+            }
+        }
+
+        matches.sort(Comparator.comparingDouble(pos -> pos.distToCenterSqr(bot.position())));
+        return matches;
+    }
+
+    private static Optional<BlockPos> findNearestNetherPortal(ServerPlayer bot, int radius) {
+        ServerLevel world = (ServerLevel) bot.level();
+        BlockPos origin = bot.blockPosition();
+        BlockPos best = null;
+        double bestDistance = Double.MAX_VALUE;
+
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                for (int dy = -4; dy <= 6; dy++) {
+                    BlockPos pos = origin.offset(dx, dy, dz);
+                    if (!world.getBlockState(pos).is(Blocks.NETHER_PORTAL)) {
+                        continue;
+                    }
+                    double distance = pos.distToCenterSqr(bot.position());
+                    if (distance < bestDistance) {
+                        best = pos;
+                        bestDistance = distance;
+                    }
+                }
+            }
+        }
+
+        return Optional.ofNullable(best);
+    }
+
+    private static Optional<PortalBuildPlan> choosePortalBuildPlan(ServerPlayer bot, Direction facing) {
+        ServerLevel world = (ServerLevel) bot.level();
+        Direction forward = Direction.fromYRot(facing.toYRot());
+        Direction right = forward.getClockWise();
+        BlockPos origin = bot.blockPosition();
+
+        for (int distance = 3; distance <= 7; distance++) {
+            for (int sideOffset = 0; sideOffset <= 3; sideOffset++) {
+                for (int signedSide : sideOffset == 0 ? List.of(0) : List.of(sideOffset, -sideOffset)) {
+                    BlockPos candidateFeet = origin.relative(forward, distance).relative(right, signedSide);
+                    int y = findStandableBuilderY(world, candidateFeet.getX(), candidateFeet.getZ(), origin.getY());
+                    BlockPos baseLeft = new BlockPos(candidateFeet.getX(), y, candidateFeet.getZ());
+                    PortalBuildPlan plan = buildPortalPlan(baseLeft, right);
+                    if (isClearPortalPlan(world, plan)) {
+                        return Optional.of(plan);
+                    }
+                }
+            }
+        }
+
+        return Optional.empty();
+    }
+
+    private static PortalBuildPlan buildPortalPlan(BlockPos baseLeft, Direction right) {
+        List<BlockPos> frame = new ArrayList<>();
+        List<BlockPos> inner = new ArrayList<>();
+
+        for (int x = 0; x <= 3; x++) {
+            for (int y = 0; y <= 4; y++) {
+                BlockPos pos = baseLeft.relative(right, x).above(y);
+                boolean isCorner = (x == 0 || x == 3) && (y == 0 || y == 4);
+                boolean isFrame = !isCorner && (x == 0 || x == 3 || y == 0 || y == 4);
+                if (isFrame) {
+                    frame.add(pos);
+                } else if (x >= 1 && x <= 2 && y >= 1 && y <= 3) {
+                    inner.add(pos);
+                }
+            }
+        }
+
+        return new PortalBuildPlan(baseLeft, right, frame, inner);
+    }
+
+    private static boolean isClearPortalPlan(ServerLevel world, PortalBuildPlan plan) {
+        Set<BlockPos> frameSet = new HashSet<>(plan.frameBlocks());
+        for (BlockPos framePos : plan.frameBlocks()) {
+            BlockState state = world.getBlockState(framePos);
+            if (!state.isAir() && !state.canBeReplaced() && !state.is(Blocks.OBSIDIAN)) {
+                return false;
+            }
+            if (framePos.getY() == plan.baseLeft().getY() && !world.getBlockState(framePos.below()).isRedstoneConductor(world, framePos.below())) {
+                return false;
+            }
+        }
+        for (BlockPos innerPos : plan.innerBlocks()) {
+            BlockState state = world.getBlockState(innerPos);
+            if (!state.isAir() && !state.canBeReplaced() && !state.is(Blocks.NETHER_PORTAL)) {
+                return false;
+            }
+        }
+        for (BlockPos framePos : frameSet) {
+            if (world.getBlockState(framePos).is(Blocks.NETHER_PORTAL)) {
+                return true;
+            }
+        }
+        return true;
+    }
+
+    private static String lightNetherPortal(ServerPlayer bot, PortalBuildPlan plan) throws Exception {
+        BlockPos bottomObsidian = plan.baseLeft().relative(plan.right(), 1);
+        String result;
+        if (hasItemByPath(bot.getInventory(), "flint_and_steel")) {
+            result = useItemOnBlockSync(bot, bottomObsidian, Items.FLINT_AND_STEEL, Direction.UP, "flint and steel");
+        } else if (hasItemByPath(bot.getInventory(), "fire_charge")) {
+            result = useItemOnBlockSync(bot, bottomObsidian, Items.FIRE_CHARGE, Direction.UP, "fire charge");
+        } else {
+            return "WAIT:I need flint and steel or a fire charge to light the portal.";
+        }
+
+        if (result.startsWith("❌") || result.startsWith("⚠️")) {
+            return result;
+        }
+
+        Thread.sleep(500L);
+        if (plan.innerBlocks().stream().anyMatch(pos -> bot.level().getBlockState(pos).is(Blocks.NETHER_PORTAL))) {
+            return "✅ Lit Nether portal.";
+        }
+
+        Optional<BlockPos> nearbyPortal = findNearestNetherPortal(bot, 8);
+        if (nearbyPortal.isPresent()) {
+            return "✅ Lit Nether portal.";
+        }
+        return "WAIT:I used the lighter, but the portal did not ignite.";
+    }
+
+    private static String enterPortalAt(ServerPlayer bot, BlockPos portalPos) throws Exception {
+        BlockPos standPos = portalPos;
+        if (!canBotOccupy(bot, Vec3.atBottomCenterOf(standPos), false)) {
+            standPos = portalPos.below();
+        }
+
+        String moveResult = startPreciseCoordinateMove(standPos.getX(), standPos.getY(), standPos.getZ(), false, false).get(20, TimeUnit.SECONDS);
+        if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
+            return "WAIT:I found a Nether portal, but couldn't step into it: " + moveResult;
+        }
+
+        for (int i = 0; i < 12; i++) {
+            if (bot.level().dimension().toString().contains("nether")) {
+                return "Entered the Nether.";
+            }
+            Thread.sleep(500L);
+        }
+
+        return "WAIT:I stepped into the portal, but Nether transfer has not completed yet.";
+    }
+
+    private static String useBucketOnBlockSync(ServerPlayer bot, BlockPos targetPos, Item requiredItem, String label) throws Exception {
+        return useItemOnBlockSync(bot, targetPos, requiredItem, Direction.UP, "bucket on " + label);
+    }
+
+    private static String useItemOnBlockSync(ServerPlayer bot, BlockPos targetPos, Item requiredItem, Direction face, String label) throws Exception {
+        CompletableFuture<String> future = new CompletableFuture<>();
+        botSource.getServer().execute(() -> {
+            try {
+                future.complete(useItemOnBlockOnServerThread(bot, targetPos, requiredItem, face, label));
+            } catch (Exception e) {
+                future.complete("❌ Could not use " + label + ": " + e.getMessage());
+            }
+        });
+        return future.get(10, TimeUnit.SECONDS);
+    }
+
+    private static String useItemOnBlockOnServerThread(ServerPlayer bot, BlockPos targetPos, Item requiredItem, Direction face, String label) {
+        ServerLevel world = (ServerLevel) bot.level();
+        if (!isWithinPlacementRange(bot, targetPos)) {
+            return "❌ Too far to use " + label + " at " + targetPos;
+        }
+
+        int slot = ensureItemInHotbar(bot, requiredItem);
+        if (slot < 0) {
+            return "❌ Missing required item for " + label + ": " + itemId(requiredItem);
+        }
+        bot.getInventory().setSelectedSlot(slot);
+        LookController.faceBlock(bot, targetPos);
+
+        Vec3 hitVec = Vec3.atCenterOf(targetPos).add(
+                face.getStepX() * 0.5,
+                face.getStepY() * 0.5,
+                face.getStepZ() * 0.5
+        );
+        Vec3 endInsideTarget = hitVec.add(
+                face.getStepX() * -0.01,
+                face.getStepY() * -0.01,
+                face.getStepZ() * -0.01
+        );
+        BlockHitResult lineOfSight = world.clip(new ClipContext(
+                bot.getEyePosition(1.0F),
+                endInsideTarget,
+                ClipContext.Block.COLLIDER,
+                ClipContext.Fluid.ANY,
+                bot
+        ));
+        if (lineOfSight.getType() == HitResult.Type.BLOCK && !lineOfSight.getBlockPos().equals(targetPos)) {
+            return "❌ Cannot use " + label + " through block at " + lineOfSight.getBlockPos();
+        }
+
+        ItemStack handStack = bot.getItemInHand(InteractionHand.MAIN_HAND);
+        BlockHitResult hitResult = new BlockHitResult(hitVec, face, targetPos, false);
+        bot.gameMode.useItemOn(bot, world, handStack, InteractionHand.MAIN_HAND, hitResult);
+        return "✅ Used " + label + " at " + targetPos;
+    }
+
+    private static int ensureItemInHotbar(ServerPlayer bot, Item item) {
+        Inventory inventory = bot.getInventory();
+        for (int i = 0; i < 9; i++) {
+            if (inventory.getItem(i).is(item)) {
+                return i;
+            }
+        }
+
+        int inventorySlot = -1;
+        for (int i = 9; i < inventory.getContainerSize(); i++) {
+            if (inventory.getItem(i).is(item)) {
+                inventorySlot = i;
+                break;
+            }
+        }
+        if (inventorySlot < 0) {
+            return -1;
+        }
+
+        int hotbarSlot = 8;
+        for (int i = 0; i < 9; i++) {
+            if (inventory.getItem(i).isEmpty()) {
+                hotbarSlot = i;
+                break;
+            }
+        }
+
+        ItemStack stackToMove = inventory.getItem(inventorySlot);
+        inventory.setItem(hotbarSlot, stackToMove.copy());
+        inventory.setItem(inventorySlot, ItemStack.EMPTY);
+        return hotbarSlot;
+    }
+
     private static List<BlockPos> findNearbyTreeLogs(ServerPlayer bot, BlockPos firstLog, List<String> logTypes) {
         ServerLevel world = (ServerLevel) bot.level();
         List<BlockPos> logs = new ArrayList<>();
@@ -2714,6 +3068,8 @@ public class FunctionCallerV2 {
     }
 
     private record DragonSpeedrunStage(String name, String nextAction, String requirements) {}
+
+    private record PortalBuildPlan(BlockPos baseLeft, Direction right, List<BlockPos> frameBlocks, List<BlockPos> innerBlocks) {}
 
     private static boolean tryHandleDirectDrop(String userInput) {
         DropRequest dropRequest = parseDirectDropRequest(userInput);
@@ -4473,6 +4829,7 @@ public class FunctionCallerV2 {
         recipes.put(Items.TORCH, new CraftRecipe(Items.TORCH, 4, List.of(coalLike(1), exact(Items.STICK, 1))));
         recipes.put(Items.BREAD, new CraftRecipe(Items.BREAD, 1, List.of(exact(Items.WHEAT, 3))));
         recipes.put(Items.BUCKET, new CraftRecipe(Items.BUCKET, 1, List.of(exact(Items.IRON_INGOT, 3))));
+        recipes.put(Items.FLINT_AND_STEEL, new CraftRecipe(Items.FLINT_AND_STEEL, 1, List.of(exact(Items.IRON_INGOT, 1), exact(Items.FLINT, 1))));
 
         addToolRecipes(recipes, "wooden", planks(0));
         addToolRecipes(recipes, "stone", stoneToolMaterial(0));
