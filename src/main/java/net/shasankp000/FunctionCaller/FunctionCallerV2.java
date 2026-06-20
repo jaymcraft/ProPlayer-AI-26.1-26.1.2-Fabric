@@ -1805,6 +1805,11 @@ public class FunctionCallerV2 {
             return "Portal prep complete: bucket has fluid for portal routing.";
         }
 
+        String immediateWaterResult = collectWaterTouchingBotWithBucket(bot);
+        if (!immediateWaterResult.startsWith("WAIT:") && !immediateWaterResult.startsWith("❌") && !immediateWaterResult.startsWith("⚠️")) {
+            return immediateWaterResult;
+        }
+
         String visibleWaterResult = collectVisibleFluidWithBucket(bot, Blocks.WATER, "water");
         if (!visibleWaterResult.startsWith("WAIT:") && !visibleWaterResult.startsWith("❌") && !visibleWaterResult.startsWith("⚠️")) {
             return visibleWaterResult;
@@ -1850,7 +1855,16 @@ public class FunctionCallerV2 {
         }
 
         Direction facing = bot.getDirection();
-        PortalBuildPlan plan = getRememberedPortalBuildPlan(bot)
+        Optional<PortalBuildPlan> rememberedPlan = getRememberedPortalBuildPlan(bot);
+        if (rememberedPlan.isEmpty() && hasPortalRoutingFluid(inventory)) {
+            String preparedAwayFromFluid = preparePortalBuildSpaceAwayFromNearbyFluids(bot, facing);
+            if (!preparedAwayFromFluid.startsWith("WAIT:")) {
+                return preparedAwayFromFluid;
+            }
+            logger.info("Could not prepare fluid-offset portal cavity yet: {}", preparedAwayFromFluid);
+        }
+
+        PortalBuildPlan plan = rememberedPlan
                 .or(() -> choosePortalBuildPlan(bot, facing))
                 .orElse(null);
         if (plan == null) {
@@ -2177,7 +2191,11 @@ public class FunctionCallerV2 {
             if (tunnelResult.startsWith("❌") || tunnelResult.startsWith("⚠️")) {
                 logger.info("Could not tunnel to coal at {} via {}", coalPos, tunnelResult);
                 if (tunnelResult.contains("No usable tool")) {
-                    return "WAIT:I found coal, but I need a usable pickaxe before tunneling through stone to reach it.";
+                    String replacementResult = craftReplacementPickaxeForCoal(bot, bot.getInventory());
+                    if (!replacementResult.equals("OK")) {
+                        return replacementResult;
+                    }
+                    return "WAIT:I found coal, but my replacement pickaxe was not ready yet.";
                 }
                 continue;
             }
@@ -2239,9 +2257,9 @@ public class FunctionCallerV2 {
                 }
             }
 
-            BlockState floorState = world.getBlockState(nextFeet.below());
-            if (floorState.isAir() || !floorState.getFluidState().isEmpty()) {
-                return "⚠️ Tunnel step is unsafe because there is no solid floor at " + nextFeet.below();
+            String floorResult = ensureTunnelFloor(bot, nextFeet.below());
+            if (floorResult.startsWith("❌") || floorResult.startsWith("⚠️")) {
+                return floorResult;
             }
 
             Vec3 nextPosition = new Vec3(nextFeet.getX() + 0.5, nextFeet.getY(), nextFeet.getZ() + 0.5);
@@ -2250,6 +2268,12 @@ public class FunctionCallerV2 {
             }
 
             String moveResult = startPreciseCoordinateMove(nextFeet.getX(), nextFeet.getY(), nextFeet.getZ(), false, false).get(30, TimeUnit.SECONDS);
+            if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
+                String recoveryResult = recoverBlockedTunnelMove(bot, nextFeet, moveResult);
+                if (!recoveryResult.equals(moveResult)) {
+                    moveResult = recoveryResult;
+                }
+            }
             if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
                 return moveResult;
             }
@@ -2296,9 +2320,9 @@ public class FunctionCallerV2 {
                 Thread.sleep(250L);
             }
 
-            BlockState floorState = world.getBlockState(nextFeet.below());
-            if (floorState.isAir() || !floorState.getFluidState().isEmpty()) {
-                return "⚠️ Tunnel step is unsafe because there is no solid floor at " + nextFeet.below();
+            String floorResult = ensureTunnelFloor(bot, nextFeet.below());
+            if (floorResult.startsWith("❌") || floorResult.startsWith("⚠️")) {
+                return floorResult;
             }
 
             Vec3 nextPosition = new Vec3(nextFeet.getX() + 0.5, nextFeet.getY(), nextFeet.getZ() + 0.5);
@@ -2307,6 +2331,12 @@ public class FunctionCallerV2 {
             }
 
             String moveResult = startPreciseCoordinateMove(nextFeet.getX(), nextFeet.getY(), nextFeet.getZ(), false, false).get(30, TimeUnit.SECONDS);
+            if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
+                String recoveryResult = recoverBlockedTunnelMove(bot, nextFeet, moveResult);
+                if (!recoveryResult.equals(moveResult)) {
+                    moveResult = recoveryResult;
+                }
+            }
             if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
                 return moveResult;
             }
@@ -2335,6 +2365,11 @@ public class FunctionCallerV2 {
                 return "⚠️ Could not find a solid upward stair step toward " + targetFeet;
             }
 
+            String floorResult = ensureTunnelFloor(bot, nextFeet.below());
+            if (floorResult.startsWith("❌") || floorResult.startsWith("⚠️")) {
+                return floorResult;
+            }
+
             for (BlockPos clearPos : List.of(nextFeet, nextFeet.above())) {
                 BlockState clearState = world.getBlockState(clearPos);
                 if (clearState.isAir() || clearState.canBeReplaced()) {
@@ -2355,7 +2390,7 @@ public class FunctionCallerV2 {
                 return "⚠️ Stair tunnel step is not occupiable at " + nextFeet;
             }
 
-            String moveResult = startPreciseCoordinateMove(nextFeet.getX(), nextFeet.getY(), nextFeet.getZ(), false, false).get(30, TimeUnit.SECONDS);
+            String moveResult = moveDirectlyToMinedTunnelStep(bot, nextFeet);
             if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
                 return moveResult;
             }
@@ -2363,6 +2398,94 @@ public class FunctionCallerV2 {
         }
 
         return "⚠️ Stair tunnel step limit reached. Last result: " + lastResult;
+    }
+
+    private static String recoverBlockedTunnelMove(ServerPlayer bot, BlockPos nextFeet, String originalResult) throws Exception {
+        if (!originalResult.contains("Movement blocked")) {
+            return originalResult;
+        }
+
+        String directStepResult = moveDirectlyToMinedTunnelStep(bot, nextFeet);
+        if (!directStepResult.startsWith("❌") && !directStepResult.startsWith("⚠️")) {
+            return "Recovered blocked tunnel move with a direct step to " + nextFeet + ".";
+        }
+
+        BlockPos jumpFeet = nextFeet.above();
+        String jumpResult = moveDirectlyToMinedTunnelStep(bot, jumpFeet);
+        if (!jumpResult.startsWith("❌") && !jumpResult.startsWith("⚠️")) {
+            return "Recovered blocked tunnel move by jumping over the step at " + nextFeet + ".";
+        }
+
+        logger.info("Could not recover blocked tunnel move toward {} via direct step {} or jump {}",
+                nextFeet, directStepResult, jumpResult);
+        return originalResult;
+    }
+
+    private static String ensureTunnelFloor(ServerPlayer bot, BlockPos floorPos) throws Exception {
+        ServerLevel world = (ServerLevel) bot.level();
+        BlockState floorState = world.getBlockState(floorPos);
+        if (!floorState.getFluidState().isEmpty()) {
+            return "⚠️ Tunnel step is unsafe because floor has fluid at " + floorPos;
+        }
+        if (!floorState.isAir() && floorState.isRedstoneConductor(world, floorPos)) {
+            return "OK";
+        }
+        if (!floorState.isAir() && !floorState.canBeReplaced()) {
+            return "⚠️ Tunnel floor is blocked by non-solid block at " + floorPos;
+        }
+
+        Optional<String> floorBlockId = selectTunnelFloorBlockId(bot.getInventory());
+        if (floorBlockId.isEmpty()) {
+            return "WAIT:I need a placeable block to make a safe tunnel floor at " + floorPos + ".";
+        }
+
+        String lastPlaceResult = "No placement attempted.";
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            lastPlaceResult = BlockPlacementTool.placeBlock(bot, floorPos, floorBlockId.get()).get(10, TimeUnit.SECONDS);
+            Thread.sleep(200L);
+
+            BlockState afterState = world.getBlockState(floorPos);
+            if (afterState.getFluidState().isEmpty()
+                    && !afterState.isAir()
+                    && afterState.isRedstoneConductor(world, floorPos)) {
+                return "OK";
+            }
+
+            logger.info("Tunnel floor placement attempt {}/3 at {} did not produce a solid block: {}",
+                    attempt, floorPos, lastPlaceResult);
+            if (attempt < 3) {
+                Thread.sleep(250L);
+            }
+        }
+        return "⚠️ Could not make tunnel floor at " + floorPos + " after retries: " + lastPlaceResult;
+    }
+
+    private static Optional<String> selectTunnelFloorBlockId(Inventory inventory) {
+        List<String> preferredPaths = List.of(
+                "cobblestone",
+                "cobbled_deepslate",
+                "dirt",
+                "stone",
+                "granite",
+                "diorite",
+                "andesite"
+        );
+        for (String path : preferredPaths) {
+            if (hasItemByPath(inventory, path)) {
+                return Optional.of("minecraft:" + path);
+            }
+        }
+        for (int slot = 0; slot < inventory.getContainerSize(); slot++) {
+            ItemStack stack = inventory.getItem(slot);
+            if (stack.isEmpty()) {
+                continue;
+            }
+            String path = itemId(stack.getItem()).getPath();
+            if (path.endsWith("_planks")) {
+                return Optional.of("minecraft:" + path);
+            }
+        }
+        return Optional.empty();
     }
 
     private static BlockPos chooseNextUpwardStairStep(ServerLevel world, BlockPos feet, BlockPos targetFeet) {
@@ -2386,9 +2509,12 @@ public class FunctionCallerV2 {
                 .filter(nextFeet -> {
                     BlockPos floorPos = nextFeet.below();
                     BlockState floorState = world.getBlockState(floorPos);
-                    if (floorState.isAir()
-                            || !floorState.getFluidState().isEmpty()
-                            || !floorState.isRedstoneConductor(world, floorPos)) {
+                    if (!floorState.getFluidState().isEmpty()) {
+                        return false;
+                    }
+                    if (!floorState.isAir()
+                            && !floorState.canBeReplaced()
+                            && !floorState.isRedstoneConductor(world, floorPos)) {
                         return false;
                     }
                     BlockState feetState = world.getBlockState(nextFeet);
@@ -2398,6 +2524,30 @@ public class FunctionCallerV2 {
                 })
                 .min(Comparator.comparingInt(pos -> pos.distManhattan(targetFeet)))
                 .orElse(null);
+    }
+
+    private static String moveDirectlyToMinedTunnelStep(ServerPlayer bot, BlockPos nextFeet) throws Exception {
+        CompletableFuture<String> future = new CompletableFuture<>();
+        botSource.getServer().execute(() -> {
+            Vec3 nextPosition = Vec3.atBottomCenterOf(nextFeet);
+            if (!canBotOccupy(bot, nextPosition, false)) {
+                future.complete("❌ Mined stair step is blocked at " + nextFeet);
+                return;
+            }
+
+            bot.teleportTo(
+                    bot.level(),
+                    nextPosition.x,
+                    nextPosition.y,
+                    nextPosition.z,
+                    Set.of(),
+                    bot.getYRot(),
+                    bot.getXRot(),
+                    false
+            );
+            future.complete("Bot moved to mined stair step " + nextFeet);
+        });
+        return future.get(5, TimeUnit.SECONDS);
     }
 
     private static BlockPos nextTunnelStep(BlockPos currentFeet, BlockPos targetPos) {
@@ -2889,6 +3039,13 @@ public class FunctionCallerV2 {
     }
 
     private static String collectFluidWithBucket(ServerPlayer bot, Block fluidBlock, String label) throws Exception {
+        if (fluidBlock == Blocks.WATER) {
+            String immediateWaterResult = collectWaterTouchingBotWithBucket(bot);
+            if (!immediateWaterResult.startsWith("WAIT:") && !immediateWaterResult.startsWith("❌") && !immediateWaterResult.startsWith("⚠️")) {
+                return immediateWaterResult;
+            }
+        }
+
         List<BlockPos> candidates = findNearestFluidSources(bot, fluidBlock, 8, 8, 8);
         if (candidates.isEmpty()) {
             candidates = findNearestFluidSources(bot, fluidBlock, 64, 24, 24);
@@ -2935,6 +3092,105 @@ public class FunctionCallerV2 {
         }
 
         return "WAIT:I found " + label + ", but couldn't reach or pick up a source block yet.";
+    }
+
+    private static String collectWaterTouchingBotWithBucket(ServerPlayer bot) throws Exception {
+        if (!hasItemByPath(bot.getInventory(), "bucket")) {
+            return "WAIT:I am touching water, but I do not have an empty bucket.";
+        }
+
+        ServerLevel world = (ServerLevel) bot.level();
+        for (BlockPos waterPos : findWaterBlocksTouchingBot(bot)) {
+            Optional<BlockPos> sourcePos = findConnectedFluidSource(world, Blocks.WATER, waterPos);
+            if (sourcePos.isEmpty()) {
+                continue;
+            }
+
+            String touchingPickupResult = useBucketOnTouchingWaterSourceSync(bot, sourcePos.get());
+            if (touchingPickupResult.startsWith("✅")) {
+                return "Collected water with bucket from source at " + sourcePos.get() + " while standing in water.";
+            }
+            logger.info("Could not bucket touching-water source {} from {} via {}",
+                    sourcePos.get(), waterPos, touchingPickupResult);
+
+            String directPickupResult = tryUseBucketOnReachableFluid(bot, sourcePos.get(), "water");
+            if (directPickupResult.startsWith("✅")) {
+                return "Collected water with bucket from source at " + sourcePos.get() + " while standing in water.";
+            }
+
+            String moveResult = moveToFluidInteractionPosition(bot, sourcePos.get(), Blocks.WATER);
+            if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
+                logger.info("Could not move to touching-water source {} from {} via {}",
+                        sourcePos.get(), waterPos, moveResult);
+                continue;
+            }
+
+            String pickupResult = useBucketOnBlockSync(bot, sourcePos.get(), Items.BUCKET, "water source");
+            if (pickupResult.startsWith("✅")) {
+                return "Collected water with bucket from nearby source at " + sourcePos.get() + ".";
+            }
+            logger.info("Could not pick up touching-water source {} from {} via {}",
+                    sourcePos.get(), waterPos, pickupResult);
+        }
+
+        return "WAIT:I am touching water, but couldn't find a reachable source block to bucket yet.";
+    }
+
+    private static List<BlockPos> findWaterBlocksTouchingBot(ServerPlayer bot) {
+        ServerLevel world = (ServerLevel) bot.level();
+        AABB hitbox = bot.getBoundingBox().inflate(0.35, 0.25, 0.35);
+        BlockPos min = BlockPos.containing(hitbox.minX, hitbox.minY - 0.2, hitbox.minZ);
+        BlockPos max = BlockPos.containing(hitbox.maxX, hitbox.maxY + 0.2, hitbox.maxZ);
+        List<BlockPos> candidates = new ArrayList<>();
+        for (BlockPos pos : BlockPos.betweenClosed(min, max)) {
+            candidates.add(pos.immutable());
+        }
+
+        return uniqueBlockList(candidates).stream()
+                .filter(pos -> world.getBlockState(pos).is(Blocks.WATER))
+                .sorted(Comparator.<BlockPos>comparingInt(pos -> world.getBlockState(pos).getFluidState().isSource() ? 0 : 1)
+                        .thenComparingDouble(pos -> pos.distToCenterSqr(bot.position())))
+                .toList();
+    }
+
+    private static String useBucketOnTouchingWaterSourceSync(ServerPlayer bot, BlockPos sourcePos) throws Exception {
+        if (!bot.level().getBlockState(sourcePos).is(Blocks.WATER)
+                || !bot.level().getBlockState(sourcePos).getFluidState().isSource()) {
+            return "❌ Touching water target is not a source at " + sourcePos;
+        }
+        if (!isWithinPlacementRange(bot, sourcePos) && !isWithinInteractionRange(bot, sourcePos)) {
+            return "❌ Too far to bucket touching water source at " + sourcePos;
+        }
+
+        CompletableFuture<String> future = new CompletableFuture<>();
+        botSource.getServer().execute(() -> {
+            try {
+                int slot = ensureItemInHotbar(bot, Items.BUCKET);
+                if (slot < 0) {
+                    future.complete("❌ Missing empty bucket for touching water source at " + sourcePos);
+                    return;
+                }
+                bot.getInventory().setSelectedSlot(slot);
+                LookController.faceBlock(bot, sourcePos);
+                ItemStack handStack = bot.getItemInHand(InteractionHand.MAIN_HAND);
+                bot.gameMode.useItem(bot, (ServerLevel) bot.level(), handStack, InteractionHand.MAIN_HAND);
+                future.complete(hasItemByPath(bot.getInventory(), "water_bucket")
+                        ? "✅ Collected touching water source at " + sourcePos
+                        : "❌ Used bucket while touching water source at " + sourcePos + " but did not receive water bucket");
+            } catch (Exception e) {
+                future.complete("❌ Could not bucket touching water source at " + sourcePos + ": " + e.getMessage());
+            }
+        });
+        String result = future.get(10, TimeUnit.SECONDS);
+        if (result.startsWith("✅")) {
+            return result;
+        }
+
+        String targetedResult = useItemOnBlockSync(bot, sourcePos, Items.BUCKET, bucketInteractionFace(bot, sourcePos), "bucket on touching water source");
+        if (targetedResult.startsWith("✅") && hasItemByPath(bot.getInventory(), "water_bucket")) {
+            return "✅ Collected touching water source at " + sourcePos;
+        }
+        return result;
     }
 
     private static String collectVisibleFluidWithBucket(ServerPlayer bot, Block fluidBlock, String label) throws Exception {
@@ -3354,6 +3610,91 @@ public class FunctionCallerV2 {
         return "WAIT:I couldn't find a clear, standable space nearby, so I tried mining a portal cavity but it is not ready yet: " + lastResult;
     }
 
+    private static String preparePortalBuildSpaceAwayFromNearbyFluids(ServerPlayer bot, Direction facing) throws Exception {
+        ServerLevel world = (ServerLevel) bot.level();
+        Direction forward = Direction.fromYRot(facing.toYRot());
+        Direction right = forward.getClockWise();
+        BlockPos origin = bot.blockPosition();
+        Optional<BlockPos> nearestFluid = findNearestFluidBlock(bot, 12, 8, 8);
+        String lastResult = "No fluid-offset portal build cavity attempted.";
+
+        for (int distance = 4; distance <= 10; distance++) {
+            for (int sideOffset = 0; sideOffset <= 5; sideOffset++) {
+                for (int signedSide : sideOffset == 0 ? List.of(0) : List.of(sideOffset, -sideOffset)) {
+                    BlockPos candidateFeet = origin.relative(forward, distance).relative(right, signedSide);
+                    int y = findStandableBuilderY(world, candidateFeet.getX(), candidateFeet.getZ(), origin.getY());
+                    PortalBuildPlan plan = buildPortalPlan(new BlockPos(candidateFeet.getX(), y, candidateFeet.getZ()), right);
+                    if (nearestFluid.isPresent()
+                            && plan.baseLeft().distManhattan(nearestFluid.get()) < origin.distManhattan(nearestFluid.get()) + 4) {
+                        continue;
+                    }
+                    if (!hasSolidPortalBase(world, plan)
+                            || portalPlanContainsFluid(world, plan)
+                            || isPortalPlanNearFluid(world, plan, 3)) {
+                        continue;
+                    }
+
+                    BlockPos workPos = choosePortalWorkPosition(bot, plan, forward);
+                    String tunnelResult = mineTunnelTowardPosition(bot, workPos, 96);
+                    if (tunnelResult.startsWith("❌") || tunnelResult.startsWith("⚠️")) {
+                        lastResult = tunnelResult;
+                        continue;
+                    }
+
+                    String clearResult = minePortalPlanObstructions(bot, plan, 16);
+                    if (isClearPortalPlan(world, plan) && !isPortalPlanNearFluid(world, plan, 2)) {
+                        rememberPortalBuildPlan(plan);
+                        return "Prepared a Nether portal cavity a few blocks away from nearby water/lava at " + plan.baseLeft() + ".";
+                    }
+                    lastResult = clearResult;
+                }
+            }
+        }
+
+        return "WAIT:I have fluid, but couldn't mine a portal cavity far enough away from nearby water/lava yet: " + lastResult;
+    }
+
+    private static Optional<BlockPos> findNearestFluidBlock(ServerPlayer bot, int horizontalRadius, int verticalDown, int verticalUp) {
+        ServerLevel world = (ServerLevel) bot.level();
+        BlockPos origin = bot.blockPosition();
+        BlockPos best = null;
+        double bestDistance = Double.MAX_VALUE;
+
+        for (int dx = -horizontalRadius; dx <= horizontalRadius; dx++) {
+            for (int dz = -horizontalRadius; dz <= horizontalRadius; dz++) {
+                if (dx * dx + dz * dz > horizontalRadius * horizontalRadius) {
+                    continue;
+                }
+                for (int dy = -verticalDown; dy <= verticalUp; dy++) {
+                    BlockPos pos = origin.offset(dx, dy, dz);
+                    if (world.getBlockState(pos).getFluidState().isEmpty()) {
+                        continue;
+                    }
+                    double distance = pos.distToCenterSqr(bot.position());
+                    if (distance < bestDistance) {
+                        best = pos;
+                        bestDistance = distance;
+                    }
+                }
+            }
+        }
+
+        return Optional.ofNullable(best);
+    }
+
+    private static boolean isPortalPlanNearFluid(ServerLevel world, PortalBuildPlan plan, int radius) {
+        for (BlockPos portalPos : allPortalPlanBlocks(plan)) {
+            for (BlockPos checkPos : BlockPos.betweenClosed(
+                    portalPos.offset(-radius, -1, -radius),
+                    portalPos.offset(radius, 1, radius))) {
+                if (!world.getBlockState(checkPos).getFluidState().isEmpty()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     private static boolean hasSolidPortalBase(ServerLevel world, PortalBuildPlan plan) {
         for (BlockPos framePos : plan.frameBlocks()) {
             if (framePos.getY() != plan.baseLeft().getY()) {
@@ -3543,17 +3884,42 @@ public class FunctionCallerV2 {
                 }
             }
 
-            String useResult = useItemOnBlockSync(bot, supportPos, bucketItem, face, label + " into " + targetPos);
-            Thread.sleep(400L);
-            BlockState afterState = world.getBlockState(targetPos);
-            if (afterState.is(expectedFluidBlock) || afterState.is(Blocks.OBSIDIAN)) {
-                return "✅ Placed " + label + " into " + targetPos + ".";
+            for (int attempt = 1; attempt <= 2; attempt++) {
+                String useResult = useItemOnBlockSync(bot, supportPos, bucketItem, face, label + " into " + targetPos);
+                Thread.sleep(400L);
+
+                BlockState afterState = world.getBlockState(targetPos);
+                if (afterState.is(expectedFluidBlock) || afterState.is(Blocks.OBSIDIAN)) {
+                    return "✅ Placed " + label + " into " + targetPos + ".";
+                }
+
+                Optional<BlockPos> nearbyFluid = findPlacedFluidNear(world, targetPos, expectedFluidBlock, 2);
+                if (nearbyFluid.isPresent()) {
+                    return "✅ Placed " + label + " near " + targetPos + " at " + nearbyFluid.get() + ".";
+                }
+
+                logger.info("Could not place {} into {} via support {} face {} on attempt {}/2: {}; block became {}",
+                        label, targetPos, supportPos, face, attempt, useResult,
+                        BuiltInRegistries.BLOCK.getKey(afterState.getBlock()));
+                if (!hasItemByPath(bot.getInventory(), itemId(bucketItem).getPath())) {
+                    break;
+                }
+                Thread.sleep(150L);
             }
-            logger.info("Could not place {} into {} via support {} face {}: {}; block became {}",
-                    label, targetPos, supportPos, face, useResult, BuiltInRegistries.BLOCK.getKey(afterState.getBlock()));
         }
 
         return "❌ No usable adjacent block face to place " + label + " into " + targetPos;
+    }
+
+    private static Optional<BlockPos> findPlacedFluidNear(ServerLevel world, BlockPos targetPos, Block expectedFluidBlock, int radius) {
+        for (BlockPos pos : BlockPos.betweenClosed(
+                targetPos.offset(-radius, -radius, -radius),
+                targetPos.offset(radius, radius, radius))) {
+            if (world.getBlockState(pos).is(expectedFluidBlock)) {
+                return Optional.of(pos.immutable());
+            }
+        }
+        return Optional.empty();
     }
 
     private static PortalBuildPlan buildPortalPlan(BlockPos baseLeft, Direction right) {
@@ -4147,16 +4513,43 @@ public class FunctionCallerV2 {
     }
 
     private static String ensureUsablePickaxeForCoalOre(ServerPlayer bot, Inventory inventory) throws Exception {
+        return craftReplacementPickaxeForCoal(bot, inventory);
+    }
+
+    private static String craftReplacementPickaxeForCoal(ServerPlayer bot, Inventory inventory) throws Exception {
         if (hasUsableItemByPath(inventory, "wooden_pickaxe")
                 || hasUsableItemByPath(inventory, "stone_pickaxe")
                 || hasUsableItemByPath(inventory, "iron_pickaxe")) {
             return "OK";
         }
+
         if (countItemByPath(inventory, "cobblestone") + countItemByPath(inventory, "cobbled_deepslate") >= 3
                 && countItemByPath(inventory, "stick") >= 2) {
+            String basicsResult = ensureDragonRouteCraftingBasics(bot, inventory, 2);
+            if (!basicsResult.equals("OK")) {
+                return basicsResult;
+            }
             return craftItemOnServerThreadSync(bot, "stone_pickaxe", 1);
         }
-        return craftItemOnServerThreadSync(bot, "wooden_pickaxe", 1);
+
+        if (countItemByPath(inventory, "iron_ingot") >= 3) {
+            String basicsResult = ensureDragonRouteCraftingBasics(bot, inventory, 2);
+            if (!basicsResult.equals("OK")) {
+                return basicsResult;
+            }
+            return craftItemOnServerThreadSync(bot, "iron_pickaxe", 1);
+        }
+
+        int planks = countItemsMatching(inventory, item -> itemId(item).getPath().endsWith("_planks"));
+        if (planks >= 3 || countWoodItems(inventory) > 0) {
+            String basicsResult = ensureDragonRouteCraftingBasics(bot, inventory, 2);
+            if (!basicsResult.equals("OK")) {
+                return basicsResult;
+            }
+            return craftItemOnServerThreadSync(bot, "wooden_pickaxe", 1);
+        }
+
+        return "WAIT:I found coal, but I need resources for a replacement pickaxe: 3 cobblestone, 3 iron ingots, or 3 planks plus 2 sticks.";
     }
 
     private static String ensureUsablePickaxeForIronOre(ServerPlayer bot, Inventory inventory) throws Exception {
@@ -4316,6 +4709,10 @@ public class FunctionCallerV2 {
 
     private static boolean hasItemByPath(Inventory inventory, String path) {
         return countItemByPath(inventory, path) > 0;
+    }
+
+    private static boolean hasPortalRoutingFluid(Inventory inventory) {
+        return hasItemByPath(inventory, "water_bucket") || hasItemByPath(inventory, "lava_bucket");
     }
 
     private static int countFoodItems(Inventory inventory) {
