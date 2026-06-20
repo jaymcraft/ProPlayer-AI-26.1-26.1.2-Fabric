@@ -19,12 +19,10 @@ I had to add that statement up there to prevent misunderstandings.
 
 This mod relies on the internal code of the Carpet mod, please star the repository of the mod: https://github.com/gnembon/fabric-carpet (Giving credit where it's due)
 
-This mod also relies on the ollama4j project. https://github.com/amithkoujalgi/ollama4j
-
 ---
 # Download links
 
-1.Modrinth https://modrinth.com/mod/ai-player-fabric-26.1-26.1.2
+1.Modrinth still waiting to be acepted
 
 # Changelog v1.0.5.2-release+1.21.1
 
@@ -55,9 +53,7 @@ Set the system property(JVM argument) when launching the game:
     - **Custom API URL**: The base URL of your provider (e.g., `https://openrouter.ai/api/v1`)
     - **Custom API Key**: Your API key for the provider
 3. Hit save. In case you don't see the list of models immediately hit the "Refresh Models" button once or twice.
-4. If you still don't see the list of models, close the config manager, type `/configMan` again and you should see the list of models available.
-5. ollama is still required to be open in the background because of the embedding model being used, but I will separate this entirely in the next mini patch, by adding an embedding api endpoint from the providers, and also upgrading to the `embedddinggemma` model from `nomic-embed-text`
-
+4. If you still don't see the list of models, close the config manager, type `/configMan` again and you should see the list of models available.       
 ### 3. Select a Model
 
 The system will automatically fetch available models from your provider's `/models` endpoint and display them in the model selection interface.
