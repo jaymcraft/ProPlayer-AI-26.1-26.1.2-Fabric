@@ -213,7 +213,7 @@ public class ManualConfig {
         } catch (IOException e) {
             LOGGER.error("Failed to load config file. Using default config.", e);
             return new ManualConfig();
-        } catch (JsonParseException e) {
+        } catch (JsonParseException | IllegalStateException e) {
             LOGGER.error("Config file is malformed. Backing it up and recreating defaults.", e);
             backupMalformedConfig(file);
             ManualConfig defaultConfig = new ManualConfig();

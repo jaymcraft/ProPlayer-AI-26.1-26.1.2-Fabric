@@ -69,14 +69,17 @@ public class AIPlayerClient implements ClientModInitializer {
         } catch (IOException e) {
             System.out.println("Bot profiles not found yet - continuing with no bots registered.");
             botProfiles = null;
-        } catch (JsonParseException e) {
-            LOGGER.warn("Bot profiles config is malformed. Continuing with no bots registered: {}", e.getMessage());
+        } catch (JsonParseException | IllegalStateException e) {
+            LOGGER.warn("Bot profile config is malformed at {}; continuing with no bots registered: {}", BOT_PROFILE_PATH, e.getMessage());
             botProfiles = null;
         }
     }
 
     private static JsonObject getBotProfiles() {
-        if (botProfiles == null || !botProfiles.has("botGameProfile") || botProfiles.get("botGameProfile").isJsonNull() || !botProfiles.get("botGameProfile").isJsonObject()) {
+        if (botProfiles == null
+                || !botProfiles.has("botGameProfile")
+                || botProfiles.get("botGameProfile").isJsonNull()
+                || !botProfiles.get("botGameProfile").isJsonObject()) {
             return null;
         }
         return botProfiles.getAsJsonObject("botGameProfile");

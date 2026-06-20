@@ -241,8 +241,9 @@ public class MiningTool {
             }
 
             ItemStack stackToMove = bot.getInventory().getItem(i);
+            ItemStack displacedStack = bot.getInventory().getItem(hotbarSlot);
             bot.getInventory().setItem(hotbarSlot, stackToMove.copy());
-            bot.getInventory().setItem(i, ItemStack.EMPTY);
+            bot.getInventory().setItem(i, displacedStack.copy());
             bot.getInventory().setSelectedSlot(hotbarSlot);
             bot.getInventory().setChanged();
             return;

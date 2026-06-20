@@ -15,7 +15,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 
 public final class BotSkinHelper {
-    private static final Logger LOGGER = LoggerFactory.getLogger("BotSkinHelper");
+    private static final Logger LOGGER = LoggerFactory.getLogger("bot-skin-helper");
     private static final Gson GSON = new Gson();
     private static final Path BOT_PROFILE_PATH = Paths.get(LauncherEnvironment.getStorageDirectory("config") + File.separator + "settings.json5");
 
@@ -41,8 +41,8 @@ public final class BotSkinHelper {
             }
         } catch (IOException ignored) {
             return false;
-        } catch (JsonParseException e) {
-            LOGGER.warn("Unable to read bot skin profiles because config is malformed: {}", e.getMessage());
+        } catch (JsonParseException | IllegalStateException e) {
+            LOGGER.warn("Ignoring malformed bot profile config at {}: {}", BOT_PROFILE_PATH, e.getMessage());
             return false;
         }
 

@@ -14,6 +14,7 @@ import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
@@ -21,6 +22,8 @@ import net.shasankp000.Entity.LookController;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.List;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
 public class BlockPlacementTool {
@@ -102,6 +105,15 @@ public class BlockPlacementTool {
                     return error;
                 }
 
+                if (botIntersectsTargetBlock(bot, targetPos)) {
+                    String moveResult = moveAwayFromPlacementTarget(bot, targetPos);
+                    if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
+                        LOGGER.warn(moveResult);
+                        return moveResult;
+                    }
+                    LOGGER.info(moveResult);
+                }
+
                 // Step 6: Find a suitable face to place against
                 boolean hasPlacementSurface = hasPlacementSurface(world, targetPos);
                 Direction placementDirection = findPlacementDirection(world, bot, targetPos);
@@ -166,6 +178,87 @@ public class BlockPlacementTool {
                 LOGGER.error(error, e);
                 return error;
             }
+    }
+
+    private static boolean botIntersectsTargetBlock(ServerPlayer bot, BlockPos targetPos) {
+        return blockBox(targetPos).intersects(bot.getBoundingBox().inflate(0.01));
+    }
+
+    private static String moveAwayFromPlacementTarget(ServerPlayer bot, BlockPos targetPos) {
+        Level world = bot.level();
+        List<BlockPos> candidates = List.of(
+                bot.blockPosition().north(),
+                bot.blockPosition().south(),
+                bot.blockPosition().east(),
+                bot.blockPosition().west(),
+                targetPos.north(),
+                targetPos.south(),
+                targetPos.east(),
+                targetPos.west(),
+                bot.blockPosition().above()
+        );
+
+        for (BlockPos candidate : candidates) {
+            if (candidate.equals(targetPos) || !canStandForPlacement(bot, world, candidate, targetPos)) {
+                continue;
+            }
+
+            Vec3 position = Vec3.atBottomCenterOf(candidate);
+            bot.teleportTo(
+                    bot.level(),
+                    position.x,
+                    position.y,
+                    position.z,
+                    Set.of(),
+                    bot.getYRot(),
+                    bot.getXRot(),
+                    false
+            );
+            return "Moved away from placement target " + targetPos + " to " + candidate;
+        }
+
+        return "❌ Bot is standing in the placement target at " + targetPos + " and no safe adjacent step was found";
+    }
+
+    private static boolean canStandForPlacement(ServerPlayer bot, Level world, BlockPos feet, BlockPos targetPos) {
+        BlockState feetState = world.getBlockState(feet);
+        BlockState headState = world.getBlockState(feet.above());
+        BlockState floorState = world.getBlockState(feet.below());
+        if ((!feetState.isAir() && !feetState.canBeReplaced())
+                || !feetState.getFluidState().isEmpty()
+                || (!headState.isAir() && !headState.canBeReplaced())
+                || !headState.getFluidState().isEmpty()
+                || floorState.isAir()
+                || !floorState.getFluidState().isEmpty()
+                || !floorState.isRedstoneConductor(world, feet.below())) {
+            return false;
+        }
+
+        AABB candidateBox = playerHitboxAt(Vec3.atBottomCenterOf(feet));
+        return !candidateBox.intersects(blockBox(targetPos)) && world.noCollision(bot, candidateBox);
+    }
+
+    private static AABB playerHitboxAt(Vec3 position) {
+        double halfWidth = 0.3;
+        return new AABB(
+                position.x - halfWidth,
+                position.y,
+                position.z - halfWidth,
+                position.x + halfWidth,
+                position.y + 1.8,
+                position.z + halfWidth
+        );
+    }
+
+    private static AABB blockBox(BlockPos pos) {
+        return new AABB(
+                pos.getX(),
+                pos.getY(),
+                pos.getZ(),
+                pos.getX() + 1.0,
+                pos.getY() + 1.0,
+                pos.getZ() + 1.0
+        );
     }
 
     /**
@@ -250,15 +343,17 @@ public class BlockPlacementTool {
         }
 
         if (emptyHotbarSlot == -1) {
-            // No empty hotbar slot, use slot 8 as fallback (replace whatever is there)
+            // No empty hotbar slot, use slot 8 as fallback and swap the displaced item back.
             emptyHotbarSlot = 8;
             LOGGER.info("No empty hotbar slot found, using slot 8 as fallback");
         }
 
-        // Move the stack from inventory to hotbar
+        // Move the stack from inventory to hotbar without deleting the displaced hotbar item.
         ItemStack stackToMove = bot.getInventory().getItem(inventorySlot);
+        ItemStack displacedStack = bot.getInventory().getItem(emptyHotbarSlot);
         bot.getInventory().setItem(emptyHotbarSlot, stackToMove.copy());
-        bot.getInventory().setItem(inventorySlot, ItemStack.EMPTY);
+        bot.getInventory().setItem(inventorySlot, displacedStack.copy());
+        bot.getInventory().setChanged();
 
         LOGGER.info("Moved {} from inventory slot {} to hotbar slot {}", blockType, inventorySlot, emptyHotbarSlot);
         return emptyHotbarSlot;
