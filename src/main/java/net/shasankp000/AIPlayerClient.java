@@ -143,8 +143,8 @@ public class AIPlayerClient implements ClientModInitializer {
                 }
             }
 
-            net.minecraft.client.gui.screens.Screen currentScreen = net.minecraft.client.Minecraft.getInstance().screen;
-            net.minecraft.client.Minecraft.getInstance().setScreen(
+            net.minecraft.client.gui.screens.Screen currentScreen = net.minecraft.client.Minecraft.getInstance().gui.screen();
+            net.minecraft.client.Minecraft.getInstance().gui.setScreen(
                     new net.shasankp000.GraphicalUserInterface.ConfigManager(net.minecraft.network.chat.Component.empty(), currentScreen, models, selectedModel)
             );
         });
@@ -215,9 +215,7 @@ public class AIPlayerClient implements ClientModInitializer {
                             }
                             else {
                                 LOGGER.error("");
-                                client.getToastManager().addToast(
-                                        SystemToast.multiline(client, SystemToast.SystemToastId.CHUNK_LOAD_FAILURE, Component.nullToEmpty("LLM Client factory error."), Component.nullToEmpty("Error! Returned client is null! Cannot proceed!"))
-                                );
+                                SystemToast.add(client.gui.toastManager(), SystemToast.SystemToastId.CHUNK_LOAD_FAILURE, Component.nullToEmpty("LLM Client factory error."), Component.nullToEmpty("Error! Returned client is null! Cannot proceed!"));
                             }
                             break;
                         case "ollama":
@@ -225,9 +223,7 @@ public class AIPlayerClient implements ClientModInitializer {
                             break;
                         default:
                             LOGGER.warn("Unsupported provider detected: {}", llmProvider);
-                            client.getToastManager().addToast(
-                                    SystemToast.multiline(client, SystemToast.SystemToastId.NARRATOR_TOGGLE, Component.nullToEmpty("Invalid LLM Client."), Component.nullToEmpty("Set aiplayer.llmMode=custom for OpenAI-compatible endpoints."))
-                            );
+                            SystemToast.add(client.gui.toastManager(), SystemToast.SystemToastId.NARRATOR_TOGGLE, Component.nullToEmpty("Invalid LLM Client."), Component.nullToEmpty("Set aiplayer.llmMode=custom for OpenAI-compatible endpoints."));
                             break;
                     }
 
@@ -285,9 +281,7 @@ public class AIPlayerClient implements ClientModInitializer {
                         }
                         else {
                             LOGGER.error("Error! Returned client is null! Cannot proceed!");
-                            client.getToastManager().addToast(
-                                    SystemToast.multiline(client, SystemToast.SystemToastId.CHUNK_LOAD_FAILURE, Component.nullToEmpty("LLM Client factory error."), Component.nullToEmpty("Error! Returned client is null! Cannot proceed!"))
-                            );
+                            SystemToast.add(client.gui.toastManager(), SystemToast.SystemToastId.CHUNK_LOAD_FAILURE, Component.nullToEmpty("LLM Client factory error."), Component.nullToEmpty("Error! Returned client is null! Cannot proceed!"));
                         }
                         break;
 
@@ -297,9 +291,7 @@ public class AIPlayerClient implements ClientModInitializer {
 
                     default:
                         LOGGER.warn("Unsupported provider detected: {}", llmProvider);
-                        client.getToastManager().addToast(
-                                SystemToast.multiline(client, SystemToast.SystemToastId.NARRATOR_TOGGLE, Component.nullToEmpty("Invalid LLM Client."), Component.nullToEmpty("Set aiplayer.llmMode=custom for OpenAI-compatible endpoints."))
-                        );
+                        SystemToast.add(client.gui.toastManager(), SystemToast.SystemToastId.NARRATOR_TOGGLE, Component.nullToEmpty("Invalid LLM Client."), Component.nullToEmpty("Set aiplayer.llmMode=custom for OpenAI-compatible endpoints."));
                         break;
 
                 }

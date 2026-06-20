@@ -87,8 +87,7 @@ public class APIKeysScreen extends Screen {
             this.saveToFile();
 
             if (this.minecraft != null) {
-                this.minecraft.getToastManager().addToast(
-                        SystemToast.multiline(this.minecraft, SystemToast.SystemToastId.NARRATOR_TOGGLE, Component.nullToEmpty("API Keys Saved!"), Component.nullToEmpty("Your API keys have been saved.")));
+                SystemToast.add(this.minecraft.gui.toastManager(), SystemToast.SystemToastId.NARRATOR_TOGGLE, Component.nullToEmpty("API Keys Saved!"), Component.nullToEmpty("Your API keys have been saved."));
             }
         }).bounds(this.width / 2 - buttonWidth - 10, startY + 190, buttonWidth, fieldHeight).build();
         this.addRenderableWidget(saveButton);
@@ -97,7 +96,7 @@ public class APIKeysScreen extends Screen {
         Button doneButton = Button.builder(Component.nullToEmpty("Done"), (btn) -> {
             // Close the current screen and return to the parent
             assert this.minecraft != null;
-            this.minecraft.setScreen(this.parent);
+            this.minecraft.gui.setScreen(this.parent);
         }).bounds(this.width / 2 + 10, startY + 190, buttonWidth, fieldHeight).build();
         this.addRenderableWidget(doneButton);
     }
@@ -163,6 +162,6 @@ public class APIKeysScreen extends Screen {
     @Override
     public void onClose() {
         assert this.minecraft != null;
-        this.minecraft.setScreen(this.parent);
+        this.minecraft.gui.setScreen(this.parent);
     }
 }

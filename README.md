@@ -1,4 +1,4 @@
-i forked this project to 26.1                                                   here is official github:  https://github.com/shasankp000/AI-Player                                                            
+i forked this project to 26.2 — official project: https://github.com/shasankp000/AI-Player
 # Official website
 
 https://shasankp000.github.io/AI-Player-Website/
