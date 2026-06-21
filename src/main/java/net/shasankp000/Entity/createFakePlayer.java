@@ -273,8 +273,6 @@ public class createFakePlayer extends ServerPlayer {
     public void die(DamageSource cause) {
         shakeOff();
         super.die(cause);
-        setHealth(20);
-        this.foodData = new FoodData();
         kill(this.getCombatTracker().getDeathMessage());
     }
 
@@ -286,11 +284,6 @@ public class createFakePlayer extends ServerPlayer {
     @Override
     public boolean allowsListing() {
         return true;
-    }
-
-    @Override
-    protected void checkFallDamage(double y, boolean onGround, BlockState state, BlockPos pos) {
-        doCheckFallDamage(0.0, y, 0.0, onGround);
     }
 
     @Override

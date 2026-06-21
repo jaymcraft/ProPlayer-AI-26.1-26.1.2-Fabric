@@ -8,7 +8,6 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
-import net.shasankp000.Commands.modCommandRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -113,7 +112,10 @@ public class PathTracer {
                 // if was sprinting previously, set to false.
                 if (shouldSprint) {
                     shouldSprint = false; // reset the flag
-                    server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " unsprint");
+                    ServerPlayer bot = botSource.getPlayer();
+                    if (bot != null) {
+                        SurvivalMovementController.stop(bot);
+                    }
                 }
 
                 // ✅ Complete the path and set final result
@@ -138,7 +140,6 @@ public class PathTracer {
             }
 
             LOGGER.info("START segment: " + segment);
-            updateFacing(segment);
 
             int distance = calculateAxisAlignedDistance(segment.start(), segment.end());
 
@@ -160,9 +161,15 @@ public class PathTracer {
 
             System.out.println("Walking for " + travelTime + " seconds");
 
-            modCommandRegistry.moveForward(server, botSource, botName);
-
             long jumpDelay = Math.max(100, delayMillis - Math.min(200, delayMillis / 2)); // Jump halfway or at least 100ms
+
+            server.execute(() -> {
+                updateFacing(segment);
+                ServerPlayer bot = botSource.getPlayer();
+                if (bot != null) {
+                    SurvivalMovementController.startForward(bot, segment.sprint() && !shortJumpSegment);
+                }
+            });
 
             // Schedule jump if required, slightly before reaching the target to ensure proper timing
             if (segment.jump()) {
@@ -170,25 +177,27 @@ public class PathTracer {
                     if (!isCurrentGeneration()) {
                         return;
                     }
-                    server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " jump");
-                    LOGGER.info(botName + " performed a jump!");
+                    server.execute(() -> {
+                        ServerPlayer bot = botSource.getPlayer();
+                        if (bot != null) {
+                            SurvivalMovementController.requestJump(bot);
+                        }
+                        LOGGER.info(botName + " performed a jump!");
+                    });
                 }, jumpDelay, TimeUnit.MILLISECONDS); // Jump 200ms before reaching target
-            }
-
-            if (segment.sprint() && !shortJumpSegment) {
-                server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " sprint");
-            }
-            else {
-                // if was set to sprint before, stop sprinting anyways.
-                server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " unsprint");
             }
 
             scheduler.schedule(() -> {
                 if (!isCurrentGeneration()) {
                     return;
                 }
-                modCommandRegistry.stopMoving(server, botSource, botName);
-                LOGGER.info(botName + " has stopped walking!");
+                server.execute(() -> {
+                    ServerPlayer bot = botSource.getPlayer();
+                    if (bot != null) {
+                        SurvivalMovementController.stop(bot);
+                    }
+                    LOGGER.info(botName + " has stopped walking!");
+                });
             }, delayMillis, TimeUnit.MILLISECONDS);
 
             isMoving = true;
@@ -204,38 +213,11 @@ public class PathTracer {
         }
 
         private void executeVerticalSegment(Segment segment) {
-            LOGGER.info("Using precise vertical correction for segment: {}", segment);
-            isMoving = true;
-            server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " unsprint");
-            modCommandRegistry.stopMoving(server, botSource, botName);
-
-            scheduler.schedule(() -> {
-                if (!isCurrentGeneration()) {
-                    return;
-                }
-
-                ServerPlayer player = botSource.getPlayer();
-                if (player == null) {
-                    waitForSegmentCompletion(segment);
-                    return;
-                }
-
-                Vec3 target = new Vec3(segment.end().getX() + 0.5, segment.end().getY(), segment.end().getZ() + 0.5);
-                try {
-                    if (teleportIfCanOccupy(player, target)
-                            && hasReachedTarget(player.blockPosition(), segment.end(), segment)) {
-                        LOGGER.info("✅ Reached vertical segment target: {}", segment.end());
-                        retries = 0;
-                        isMoving = false;
-                        startProcessing();
-                        return;
-                    }
-                } catch (Exception e) {
-                    LOGGER.warn("Precise vertical segment correction failed for {}", segment, e);
-                }
-
-                waitForSegmentCompletion(segment);
-            }, 50, TimeUnit.MILLISECONDS);
+            // Never correct a path by moving the player server-side. A vertical-only
+            // segment cannot be walked, so let normal path recovery find a route that
+            // uses real jumps, stairs, ladders, or a safe descent.
+            LOGGER.info("Vertical segment requires normal traversal; re-pathing: {}", segment);
+            scheduler.schedule(() -> waitForSegmentCompletion(segment), 50, TimeUnit.MILLISECONDS);
         }
 
         private void waitForSegmentCompletion(Segment completedSegment) {
@@ -419,97 +401,9 @@ public class PathTracer {
         }
 
         private boolean tryPreciseSegmentFallback(ServerPlayer player, Segment segment) throws Exception {
-            Vec3 start = player.position();
-            Vec3 target = new Vec3(segment.end().getX() + 0.5, segment.end().getY(), segment.end().getZ() + 0.5);
-            if (start.distanceTo(target) > 4.0) {
-                return false;
-            }
-
-            if (start.distanceTo(target) <= 3.0 && teleportIfCanOccupy(player, target)) {
-                return hasReachedTarget(player.blockPosition(), segment.end(), segment);
-            }
-
-            int ticks = Math.max(1, (int) Math.ceil(start.distanceTo(target) * 6.0));
-            for (int tick = 0; tick < ticks; tick++) {
-                double progress = (tick + 1) / (double) ticks;
-                Vec3 next = start.lerp(target, progress);
-                CompletableFuture<Boolean> step = new CompletableFuture<>();
-                server.execute(() -> {
-                    if (!canOccupy(player, next)) {
-                        step.complete(false);
-                        return;
-                    }
-
-                    player.teleportTo(
-                            player.level(),
-                            next.x,
-                            next.y,
-                            next.z,
-                            Set.of(),
-                            player.getYRot(),
-                            player.getXRot(),
-                            false
-                    );
-                    step.complete(true);
-                });
-
-                if (!step.get(1, TimeUnit.SECONDS)) {
-                    return false;
-                }
-                Thread.sleep(50L);
-            }
-
-            return hasReachedTarget(player.blockPosition(), segment.end(), segment);
-        }
-
-        private boolean teleportIfCanOccupy(ServerPlayer player, Vec3 target) throws Exception {
-            CompletableFuture<Boolean> step = new CompletableFuture<>();
-            server.execute(() -> {
-                if (!canOccupy(player, target)) {
-                    step.complete(false);
-                    return;
-                }
-
-                player.teleportTo(
-                        player.level(),
-                        target.x,
-                        target.y,
-                        target.z,
-                        Set.of(),
-                        player.getYRot(),
-                        player.getXRot(),
-                        false
-                );
-                step.complete(true);
-            });
-            return step.get(1, TimeUnit.SECONDS);
-        }
-
-        private boolean canOccupy(ServerPlayer player, Vec3 position) {
-            ServerLevel world = (ServerLevel) player.level();
-            BlockPos feet = BlockPos.containing(position.x, position.y, position.z);
-            BlockState below = world.getBlockState(feet.below());
-            BlockState body = world.getBlockState(feet);
-            BlockState head = world.getBlockState(feet.above());
-            AABB hitbox = new AABB(
-                    position.x - 0.3,
-                    position.y,
-                    position.z - 0.3,
-                    position.x + 0.3,
-                    position.y + 1.8,
-                    position.z + 0.3
-            );
-            return !below.isAir()
-                    && below.isRedstoneConductor(world, feet.below())
-                    && isPassableForPathCorrection(world, feet, body)
-                    && isPassableForPathCorrection(world, feet.above(), head)
-                    && world.noCollision(player, hitbox);
-        }
-
-        private boolean isPassableForPathCorrection(ServerLevel world, BlockPos pos, BlockState state) {
-            return state.isAir()
-                    || state.canBeReplaced()
-                    || state.getCollisionShape(world, pos).isEmpty();
+            // Position correction used to teleport the bot through this fallback.
+            // A failed walk must re-path instead of granting movement for free.
+            return false;
         }
 
         // ✅ Updated to return proper format for parsing
@@ -603,7 +497,18 @@ public class PathTracer {
                 lastDirection = direction;
             }
 
-            server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " look " + direction);
+            ServerPlayer bot = botSource.getPlayer();
+            if (bot != null) {
+                float yaw = switch (direction) {
+                    case "north" -> 180.0F;
+                    case "south" -> 0.0F;
+                    case "east" -> -90.0F;
+                    case "west" -> 90.0F;
+                    default -> bot.getYRot();
+                };
+                bot.setYRot(yaw);
+                bot.setYHeadRot(yaw);
+            }
             LOGGER.info("{} is now facing {} (dx: {}, dy: {}, dz: {})", botName, direction, dx, dy, dz);
         }
     }
@@ -639,6 +544,9 @@ public class PathTracer {
 
 
     public static void flushAllMovementTasks() {
+        if (BotSegmentManager.botSource != null && BotSegmentManager.botSource.getPlayer() != null) {
+            SurvivalMovementController.stop(BotSegmentManager.botSource.getPlayer());
+        }
         segmentQueue.clear();
         BotSegmentManager.clearJobs();
         LOGGER.info("All movement tasks flushed");

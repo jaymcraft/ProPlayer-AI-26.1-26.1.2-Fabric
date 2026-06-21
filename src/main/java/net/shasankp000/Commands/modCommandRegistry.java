@@ -17,7 +17,6 @@ import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.Entity;
-import net.minecraft.world.entity.ai.attributes.Attributes;
 import net.minecraft.world.entity.monster.Enemy;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.GameType;
@@ -1004,9 +1003,6 @@ public class modCommandRegistry {
 
                 LOGGER.info("Spawned new bot {}!", requestedBotName);
 
-                setBotKnockbackResistance(bot);
-                setBotAttackReach(bot);
-
                 RespawnHandler.registerRespawnListener(bot);
 
                 AutoFaceEntity.startAutoFace(bot);
@@ -1038,9 +1034,6 @@ public class modCommandRegistry {
                 LOGGER.info("Spawned new bot {}!", requestedBotName);
 
                 System.out.println("Preparing for connection to language model....");
-
-                setBotKnockbackResistance(bot);
-                setBotAttackReach(bot);
 
                 System.out.println("Registering respawn listener....");
 
@@ -1160,26 +1153,6 @@ public class modCommandRegistry {
 
     }
 
-    private static void setBotKnockbackResistance(ServerPlayer bot) {
-        var knockbackResistance = bot.getAttribute(Attributes.KNOCKBACK_RESISTANCE);
-        if (knockbackResistance == null) {
-            LOGGER.warn("Bot {} does not have a knockback resistance attribute", bot.getName().getString());
-            return;
-        }
-
-        knockbackResistance.setBaseValue(0.0);
-    }
-
-    private static void setBotAttackReach(ServerPlayer bot) {
-        var attackReach = bot.getAttribute(Attributes.ENTITY_INTERACTION_RANGE);
-        if (attackReach == null) {
-            LOGGER.warn("Bot {} does not have an entity interaction range attribute", bot.getName().getString());
-            return;
-        }
-
-        attackReach.setBaseValue(HostileMobAttackTool.MELEE_ATTACK_REACH);
-    }
-
     private static String getExceptionSummary(Exception e) {
         String message = e.getMessage();
         if (message == null || message.isBlank()) {
@@ -1242,11 +1215,10 @@ public class modCommandRegistry {
         else {
             String botName = bot.getName().tryCollapseToString();
 
-            BlockPos currentPosition = bot.blockPosition();
-            BlockPos newPosition = currentPosition.offset(1, 0, 0); // Move one block forward
-            bot.teleportTo(bot.level(), newPosition.getX(), newPosition.getY(), newPosition.getZ(), Set.of(), bot.getYRot(), bot.getXRot(), false);
-
-            LOGGER.info("Teleported {} 1 positive block ahead", botName);
+            CommandSourceStack botSource = bot.createCommandSourceStack().withSuppressedOutput();
+            moveForward(server, botSource, botName);
+            scheduler.schedule(new BotStopTask(server, botSource, botName), 250, TimeUnit.MILLISECONDS);
+            LOGGER.info("Moved {} forward using normal player input", botName);
 
         }
 

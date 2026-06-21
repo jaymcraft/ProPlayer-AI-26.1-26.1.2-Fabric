@@ -5,6 +5,8 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.phys.Vec3;
+import net.shasankp000.PlayerUtils.SurvivalGrounding;
 import net.shasankp000.PathFinding.PathFinder.PathNode;
 import java.util.List;
 import java.util.Queue;
@@ -34,8 +36,13 @@ public class GoTo {
         System.out.println("Found bot: " + botSource.getTextName());
 
         try {
+            BlockPos destination = new BlockPos(x, y, z);
+            if (!isStandableFeet(world, destination)) {
+                return "❌ Movement failed: destination is not a standable survival position";
+            }
+
             // Calculate the path
-            List<PathNode> rawPath = calculatePath(bot.blockPosition(), new BlockPos(x, y, z), world);
+            List<PathNode> rawPath = calculatePath(bot.blockPosition(), destination, world);
 
             // Simplify + filter
             List<PathNode> finalPath = simplifyPath(rawPath, world);
@@ -43,6 +50,10 @@ public class GoTo {
 
             Queue<Segment> segments = convertPathToSegments(finalPath, sprint);
             LOGGER.info("Generated segments: {}", segments);
+
+            if (segments.isEmpty() && bot.position().distanceToSqr(Vec3.atBottomCenterOf(destination)) > 0.75D * 0.75D) {
+                return "❌ Movement failed: no walkable route to the requested position";
+            }
 
             // ✅ Trace the path and wait for completion
             CompletableFuture<String> pathFuture = PathTracer.tracePath(server, botSource, botName, segments, sprint);
@@ -54,22 +65,19 @@ public class GoTo {
             String finalOutput = "";
 
             if (result.equals("Path cleared")) {
-                finalOutput = String.format("Bot moved to position - x: %d y: %d z: %d",
-                        (int) bot.getX(), (int) bot.getY(), (int) bot.getZ());
+                finalOutput = "⚠️ Movement cancelled before reaching the requested position";
             }
             else if (result.equals("Player not found")){
-                finalOutput = "Error. Player not found";
+                finalOutput = "❌ Movement failed: player not found";
             }
             else if (result.equals("Max retries exceeded")) {
-                finalOutput = String.format("Bot moved to position - x: %d y: %d z: %d",
-                        (int) bot.getX(), (int) bot.getY(), (int) bot.getZ());
+                finalOutput = "❌ Movement failed: no walkable path to the requested position";
             }
             else if (result.equals("Re-pathing failed")) {
-                finalOutput = String.format("Bot moved to position - x: %d y: %d z: %d",
-                        (int) bot.getX(), (int) bot.getY(), (int) bot.getZ());
+                finalOutput = "❌ Movement failed: no walkable path to the requested position";
             }
             else if (result.contains("Path processing failed: ")) {
-                finalOutput = "Error. Path tracer failed to process the pathfinder's data";
+                finalOutput = "❌ Movement failed: path tracer could not process the route";
             }
             else {
                 finalOutput = PathTracer.BotSegmentManager.tracePathOutput(botSource);
@@ -90,5 +98,9 @@ public class GoTo {
             LOGGER.error("Error executing goTo: ", e);
             return "Failed to execute goTo: " + e.getMessage();
         }
+    }
+
+    private static boolean isStandableFeet(ServerLevel world, BlockPos feet) {
+        return SurvivalGrounding.isStandableFeet(world, feet);
     }
 }

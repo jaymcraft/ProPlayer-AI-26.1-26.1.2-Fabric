@@ -15,6 +15,8 @@ import net.minecraft.world.level.block.state.BlockState;
 public class PathFinder {
 
     public static final Logger LOGGER = LoggerFactory.getLogger("ai-player");
+    private static final int MAX_PATH_EXPANSIONS = 20_000;
+    private static final long MAX_PATHFINDING_NANOS = 2_000_000_000L;
 
     public static class PathNode {
         public final BlockPos pos;
@@ -88,7 +90,13 @@ public class PathFinder {
         openBackward.add(goalNode);
         openMapBackward.put(target, goalNode);
 
+        long deadline = System.nanoTime() + MAX_PATHFINDING_NANOS;
+        int expansions = 0;
         while (!openForward.isEmpty() && !openBackward.isEmpty()) {
+            if (++expansions > MAX_PATH_EXPANSIONS || System.nanoTime() >= deadline) {
+                LOGGER.warn("Pathfinding budget exhausted from {} to {} after {} expansions", start, target, expansions);
+                return new ArrayList<>();
+            }
 
             // ---------- Expand forward ----------
             Node currentForward = openForward.poll();
@@ -456,7 +464,8 @@ public class PathFinder {
 
     private static boolean isPassable(ServerLevel world, BlockPos pos) {
         BlockState blockState = world.getBlockState(pos);
-        return blockState.isAir() || blockState.is(Blocks.WATER) || !blockState.getCollisionShape(world, pos).isEmpty();
+        return blockState.getFluidState().isEmpty()
+                && (blockState.isAir() || blockState.canBeReplaced() || blockState.getCollisionShape(world, pos).isEmpty());
     }
 
 
@@ -510,8 +519,14 @@ public class PathFinder {
         neighbors.add(pos.offset(-1, 0, 0)); // West
         neighbors.add(pos.offset(0, 0, 1));  // South
         neighbors.add(pos.offset(0, 0, -1)); // North
-        neighbors.add(pos.offset(0, -1, 0)); // Down
-        neighbors.add(pos.offset(0, 1, 0));  // Up - careful: raw vertical climb
+        // A survival player cannot climb vertically in place. Descents are only
+        // allowed when the lower feet position is clear and has real support.
+        BlockPos down = pos.below();
+        if (isPassable(world, down)
+                && isPassable(world, down.above())
+                && isSolidBlock(world, down.below())) {
+            neighbors.add(down);
+        }
 
         // Smart step-up moves: only add if there's a block in front
         for (BlockPos flatNeighbor : List.of(
