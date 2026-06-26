@@ -52,6 +52,9 @@ dependencies {
 	minecraft "com.mojang:minecraft:${project.minecraft_version}"
 	implementation "net.fabricmc:fabric-loader:${project.loader_version}"
 	implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+	testImplementation platform('org.junit:junit-bom:5.10.3')
+	testImplementation 'org.junit.jupiter:junit-jupiter'
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 
 	// Core application dependencies
 	implementation 'com.github.amithkoujalgi:ollama4j:1.0.77'
@@ -116,6 +119,10 @@ processResources {
 
 tasks.withType(JavaCompile).configureEach {
 	it.options.release = 25
+}
+
+test {
+	useJUnitPlatform()
 }
 
 java {
