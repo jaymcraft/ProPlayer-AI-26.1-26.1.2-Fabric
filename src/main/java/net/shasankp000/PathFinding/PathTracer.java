@@ -5,15 +5,10 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
-import net.shasankp000.Commands.modCommandRegistry;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
@@ -27,6 +22,8 @@ public class PathTracer {
     private static final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
     private static final double WALKING_SPEED = 4.317; // blocks per second
     private static final double SPRINTING_SPEED = 5.612; // blocks per second
+    private static final long MOVEMENT_POLL_INTERVAL_MS = 50L;
+    private static final long MIN_SEGMENT_TIMEOUT_MS = 750L;
     private static Queue<Segment> segmentQueue = new LinkedList<>();
     private static boolean shouldSprint;
     private static final int MAX_RETRIES = 5; // Reduced from 10
@@ -113,7 +110,7 @@ public class PathTracer {
                 // if was sprinting previously, set to false.
                 if (shouldSprint) {
                     shouldSprint = false; // reset the flag
-                    server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " unsprint");
+                    runPlayerCommand("unsprint");
                 }
 
                 // ✅ Complete the path and set final result
@@ -154,47 +151,35 @@ public class PathTracer {
             }
 
             boolean shortJumpSegment = segment.jump() && distance <= 2;
+            if (segment.sprint() && !shortJumpSegment) {
+                runPlayerCommand("sprint");
+            }
+            else {
+                // if was set to sprint before, stop sprinting anyways.
+                runPlayerCommand("unsprint");
+            }
+
             double speed = segment.sprint() && !shortJumpSegment ? SPRINTING_SPEED : WALKING_SPEED;
-            double travelTime = roundTo2Decimals(distance / speed);
-            long delayMillis = (long) (travelTime * 1000);
+            long timeoutMillis = calculateSegmentTimeoutMillis(distance, speed);
 
-            System.out.println("Walking for " + travelTime + " seconds");
+            LOGGER.info("Walking toward {} for up to {} ms", segment.end(), timeoutMillis);
+            System.out.println("Walking for up to " + (timeoutMillis / 1000.0) + " seconds");
 
-            modCommandRegistry.moveForward(server, botSource, botName);
+            runPlayerCommand("move forward");
 
-            long jumpDelay = Math.max(100, delayMillis - Math.min(200, delayMillis / 2)); // Jump halfway or at least 100ms
+            isMoving = true;
 
-            // Schedule jump if required, slightly before reaching the target to ensure proper timing
             if (segment.jump()) {
                 scheduler.schedule(() -> {
                     if (!isCurrentGeneration()) {
                         return;
                     }
-                    server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " jump");
-                    LOGGER.info(botName + " performed a jump!");
-                }, jumpDelay, TimeUnit.MILLISECONDS); // Jump 200ms before reaching target
+                    runPlayerCommand("jump");
+                    LOGGER.info("{} performed a jump!", botName);
+                }, Math.min(250L, timeoutMillis / 2L), TimeUnit.MILLISECONDS);
             }
 
-            if (segment.sprint() && !shortJumpSegment) {
-                server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " sprint");
-            }
-            else {
-                // if was set to sprint before, stop sprinting anyways.
-                server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " unsprint");
-            }
-
-            scheduler.schedule(() -> {
-                if (!isCurrentGeneration()) {
-                    return;
-                }
-                modCommandRegistry.stopMoving(server, botSource, botName);
-                LOGGER.info(botName + " has stopped walking!");
-            }, delayMillis, TimeUnit.MILLISECONDS);
-
-            isMoving = true;
-
-            // Increased delay to allow for movement settling
-            scheduler.schedule(() -> waitForSegmentCompletion(segment), delayMillis + 100, TimeUnit.MILLISECONDS);
+            pollUntilSegmentReached(segment, System.currentTimeMillis() + timeoutMillis);
         }
 
         private boolean isVerticalOnlySegment(Segment segment) {
@@ -204,11 +189,26 @@ public class PathTracer {
         }
 
         private void executeVerticalSegment(Segment segment) {
-            LOGGER.info("Using precise vertical correction for segment: {}", segment);
+            LOGGER.info("Strict survival mode cannot execute vertical-only segment by teleport: {}", segment);
             isMoving = true;
-            server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " unsprint");
-            modCommandRegistry.stopMoving(server, botSource, botName);
+            runPlayerCommand("unsprint");
+            stopMovement();
 
+            scheduler.schedule(() -> {
+                if (!isCurrentGeneration()) {
+                    return;
+                }
+
+                waitForSegmentCompletion(segment);
+            }, 50, TimeUnit.MILLISECONDS);
+        }
+
+        private long calculateSegmentTimeoutMillis(int distance, double speed) {
+            long expectedMillis = (long) Math.ceil((distance / speed) * 1000.0);
+            return Math.max(MIN_SEGMENT_TIMEOUT_MS, expectedMillis + 750L);
+        }
+
+        private void pollUntilSegmentReached(Segment segment, long deadlineMs) {
             scheduler.schedule(() -> {
                 if (!isCurrentGeneration()) {
                     return;
@@ -216,26 +216,27 @@ public class PathTracer {
 
                 ServerPlayer player = botSource.getPlayer();
                 if (player == null) {
+                    stopMovement();
                     waitForSegmentCompletion(segment);
                     return;
                 }
 
-                Vec3 target = new Vec3(segment.end().getX() + 0.5, segment.end().getY(), segment.end().getZ() + 0.5);
-                try {
-                    if (teleportIfCanOccupy(player, target)
-                            && hasReachedTarget(player.blockPosition(), segment.end(), segment)) {
-                        LOGGER.info("✅ Reached vertical segment target: {}", segment.end());
-                        retries = 0;
-                        isMoving = false;
-                        startProcessing();
-                        return;
-                    }
-                } catch (Exception e) {
-                    LOGGER.warn("Precise vertical segment correction failed for {}", segment, e);
+                if (hasReachedTarget(player.blockPosition(), player.getX(), player.getY(), player.getZ(), segment.end(), segment.jump())) {
+                    stopMovement();
+                    LOGGER.info("{} has stopped walking after reaching {}", botName, segment.end());
+                    waitForSegmentCompletion(segment);
+                    return;
                 }
 
-                waitForSegmentCompletion(segment);
-            }, 50, TimeUnit.MILLISECONDS);
+                if (System.currentTimeMillis() >= deadlineMs) {
+                    stopMovement();
+                    LOGGER.warn("{} timed out walking toward {}; current position is {}", botName, segment.end(), player.blockPosition());
+                    waitForSegmentCompletion(segment);
+                    return;
+                }
+
+                pollUntilSegmentReached(segment, deadlineMs);
+            }, MOVEMENT_POLL_INTERVAL_MS, TimeUnit.MILLISECONDS);
         }
 
         private void waitForSegmentCompletion(Segment completedSegment) {
@@ -267,7 +268,7 @@ public class PathTracer {
             LOGGER.info("Bot at: {}, Target: {}, Final: {}", currentPos, completedSegment.end(), finalDestination);
 
             // Check if we've reached the segment target with improved tolerance
-            if (hasReachedTarget(currentPos, completedSegment.end(), completedSegment)) {
+            if (hasReachedTarget(player.blockPosition(), player.getX(), player.getY(), player.getZ(), completedSegment.end(), completedSegment.jump())) {
                 LOGGER.info("✅ Reached segment target: {}", completedSegment.end());
                 retries = 0;
                 isMoving = false;
@@ -293,18 +294,6 @@ public class PathTracer {
             // Try to find if we're already at a future segment position
             if (tryAdvancedSegmentSkip(currentPos)) {
                 return;
-            }
-
-            try {
-                if (tryPreciseSegmentFallback(player, completedSegment)) {
-                    LOGGER.info("✅ Reached segment target with precise fallback: {}", completedSegment.end());
-                    retries = 0;
-                    isMoving = false;
-                    startProcessing();
-                    return;
-                }
-            } catch (Exception e) {
-                LOGGER.warn("Precise segment fallback failed for {}", completedSegment, e);
             }
 
             retries++;
@@ -340,6 +329,24 @@ public class PathTracer {
                 Queue<Segment> newSegments = PathFinder.convertPathToSegments(simplified, shouldSprint);
 
                 LOGGER.info("New path generated with {} segments", newSegments.size());
+                if (newSegments.isEmpty()) {
+                    if (GoTo.hasArrivedAtTarget(currentPos, finalDestination)) {
+                        String result = tracePathOutput(botSource);
+                        finalResult.set(result);
+                        if (pathCompletionFuture != null && !pathCompletionFuture.isDone()) {
+                            pathCompletionFuture.complete(result);
+                        }
+                    } else {
+                        LOGGER.warn("Re-pathing produced no segments but bot is at {} instead of {}", currentPos, finalDestination);
+                        String failureResult = "Re-pathing failed";
+                        finalResult.set(failureResult);
+                        if (pathCompletionFuture != null && !pathCompletionFuture.isDone()) {
+                            pathCompletionFuture.complete(failureResult);
+                        }
+                    }
+                    isMoving = false;
+                    return;
+                }
                 segmentQueue = new LinkedList<>(newSegments);
                 newSegments.forEach(this::addSegmentJob);
 
@@ -418,100 +425,6 @@ public class PathTracer {
             return generation == pathGeneration.get();
         }
 
-        private boolean tryPreciseSegmentFallback(ServerPlayer player, Segment segment) throws Exception {
-            Vec3 start = player.position();
-            Vec3 target = new Vec3(segment.end().getX() + 0.5, segment.end().getY(), segment.end().getZ() + 0.5);
-            if (start.distanceTo(target) > 4.0) {
-                return false;
-            }
-
-            if (start.distanceTo(target) <= 3.0 && teleportIfCanOccupy(player, target)) {
-                return hasReachedTarget(player.blockPosition(), segment.end(), segment);
-            }
-
-            int ticks = Math.max(1, (int) Math.ceil(start.distanceTo(target) * 6.0));
-            for (int tick = 0; tick < ticks; tick++) {
-                double progress = (tick + 1) / (double) ticks;
-                Vec3 next = start.lerp(target, progress);
-                CompletableFuture<Boolean> step = new CompletableFuture<>();
-                server.execute(() -> {
-                    if (!canOccupy(player, next)) {
-                        step.complete(false);
-                        return;
-                    }
-
-                    player.teleportTo(
-                            player.level(),
-                            next.x,
-                            next.y,
-                            next.z,
-                            Set.of(),
-                            player.getYRot(),
-                            player.getXRot(),
-                            false
-                    );
-                    step.complete(true);
-                });
-
-                if (!step.get(1, TimeUnit.SECONDS)) {
-                    return false;
-                }
-                Thread.sleep(50L);
-            }
-
-            return hasReachedTarget(player.blockPosition(), segment.end(), segment);
-        }
-
-        private boolean teleportIfCanOccupy(ServerPlayer player, Vec3 target) throws Exception {
-            CompletableFuture<Boolean> step = new CompletableFuture<>();
-            server.execute(() -> {
-                if (!canOccupy(player, target)) {
-                    step.complete(false);
-                    return;
-                }
-
-                player.teleportTo(
-                        player.level(),
-                        target.x,
-                        target.y,
-                        target.z,
-                        Set.of(),
-                        player.getYRot(),
-                        player.getXRot(),
-                        false
-                );
-                step.complete(true);
-            });
-            return step.get(1, TimeUnit.SECONDS);
-        }
-
-        private boolean canOccupy(ServerPlayer player, Vec3 position) {
-            ServerLevel world = (ServerLevel) player.level();
-            BlockPos feet = BlockPos.containing(position.x, position.y, position.z);
-            BlockState below = world.getBlockState(feet.below());
-            BlockState body = world.getBlockState(feet);
-            BlockState head = world.getBlockState(feet.above());
-            AABB hitbox = new AABB(
-                    position.x - 0.3,
-                    position.y,
-                    position.z - 0.3,
-                    position.x + 0.3,
-                    position.y + 1.8,
-                    position.z + 0.3
-            );
-            return !below.isAir()
-                    && below.isRedstoneConductor(world, feet.below())
-                    && isPassableForPathCorrection(world, feet, body)
-                    && isPassableForPathCorrection(world, feet.above(), head)
-                    && world.noCollision(player, hitbox);
-        }
-
-        private boolean isPassableForPathCorrection(ServerLevel world, BlockPos pos, BlockState state) {
-            return state.isAir()
-                    || state.canBeReplaced()
-                    || state.getCollisionShape(world, pos).isEmpty();
-        }
-
         // ✅ Updated to return proper format for parsing
         public static String tracePathOutput(CommandSourceStack botSource) {
             if (botSource == null || botSource.getPlayer() == null) {
@@ -527,35 +440,29 @@ public class PathTracer {
         }
 
         // Improved target reaching detection
-        private boolean hasReachedTarget(BlockPos current, BlockPos target, Segment segment) {
-            ServerPlayer player = botSource.getPlayer();
-            if (player == null) return false;
-
-            // Use entity position for more accurate checking
-            double playerX = player.getX();
-            double playerY = player.getY();
-            double playerZ = player.getZ();
-
-            // Target center coordinates
-            double targetX = target.getX() + 0.5;
-            double targetY = target.getY();
-            double targetZ = target.getZ() + 0.5;
-
-            double dx = Math.abs(playerX - targetX);
-            double dy = Math.abs(playerY - targetY);
-            double dz = Math.abs(playerZ - targetZ);
-
-            // Dynamic tolerance based on segment type
-            double horizontalTolerance = segment.jump() ? 1.0 : 0.8;
-            double verticalTolerance = segment.jump() ? 1.2 : 0.8;
-
-            boolean reached = dx <= horizontalTolerance && dz <= horizontalTolerance && dy <= verticalTolerance;
-
-            if (reached) {
-                LOGGER.info("Target reached! dx={:.2f}, dy={:.2f}, dz={:.2f} (tolerance: h={}, v={})",
-                        dx, dy, dz, horizontalTolerance, verticalTolerance);
+        static boolean hasReachedTarget(BlockPos current, double playerX, double playerY, double playerZ, BlockPos target, boolean jump) {
+            boolean sameHorizontalBlock = current.getX() == target.getX() && current.getZ() == target.getZ();
+            int allowedYDifference = jump ? 2 : 1;
+            boolean acceptableY = Math.abs(current.getY() - target.getY()) <= allowedYDifference;
+            if (!sameHorizontalBlock || !acceptableY) {
+                return false;
             }
 
+            double dx = Math.abs(playerX - (target.getX() + 0.5));
+            double dy = Math.abs(playerY - target.getY());
+            double dz = Math.abs(playerZ - (target.getZ() + 0.5));
+            double horizontalTolerance = jump ? 1.25 : 1.0;
+            double verticalTolerance = jump ? 2.0 : 1.25;
+
+            boolean reached = dx <= horizontalTolerance && dz <= horizontalTolerance && dy <= verticalTolerance;
+            if (reached) {
+                LOGGER.info("Target reached! dx={}, dy={}, dz={} (tolerance: h={}, v={})",
+                        String.format("%.2f", dx),
+                        String.format("%.2f", dy),
+                        String.format("%.2f", dz),
+                        horizontalTolerance,
+                        verticalTolerance);
+            }
             return reached;
         }
 
@@ -569,12 +476,6 @@ public class PathTracer {
                 return (int) Math.max(1, Math.round(dx + dy + dz));
             }
             return Math.abs(current.getX() - target.getX()) + Math.abs(current.getY() - target.getY()) + Math.abs(current.getZ() - target.getZ());
-        }
-
-        private double roundTo2Decimals(double value) {
-            BigDecimal bd = BigDecimal.valueOf(value);
-            bd = bd.setScale(2, RoundingMode.HALF_UP);
-            return bd.doubleValue();
         }
 
         private String lastDirection = "north"; // initialize with something reasonable
@@ -603,8 +504,31 @@ public class PathTracer {
                 lastDirection = direction;
             }
 
-            server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " look " + direction);
+            runPlayerCommand("look " + direction);
             LOGGER.info("{} is now facing {} (dx: {}, dy: {}, dz: {})", botName, direction, dx, dy, dz);
+        }
+
+        private void stopMovement() {
+            runPlayerCommand("stop");
+        }
+
+        private void runPlayerCommand(String command) {
+            String fullCommand = formatPlayerCommand(botName, command);
+            Runnable task = () -> {
+                LOGGER.info("Executing player command for {}: {}", botName, fullCommand);
+                server.getCommands().performPrefixedCommand(botSource, fullCommand);
+            };
+
+            if (server.isSameThread()) {
+                task.run();
+            } else {
+                LOGGER.info("Queueing player command for {} on server thread: {}", botName, fullCommand);
+                server.execute(task);
+            }
+        }
+
+        static String formatPlayerCommand(String botName, String command) {
+            return "/player " + botName + " " + command;
         }
     }
 

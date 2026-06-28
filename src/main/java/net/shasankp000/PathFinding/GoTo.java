@@ -24,6 +24,7 @@ public class GoTo {
         MinecraftServer server = botSource.getServer();
         ServerPlayer bot = botSource.getPlayer();
         String botName = botSource.getTextName();
+        BlockPos targetPos = new BlockPos(x, y, z);
 
         if (bot == null) {
             System.out.println("Bot not found!");
@@ -35,7 +36,7 @@ public class GoTo {
 
         try {
             // Calculate the path
-            List<PathNode> rawPath = calculatePath(bot.blockPosition(), new BlockPos(x, y, z), world);
+            List<PathNode> rawPath = calculatePath(bot.blockPosition(), targetPos, world);
 
             // Simplify + filter
             List<PathNode> finalPath = simplifyPath(rawPath, world);
@@ -43,6 +44,15 @@ public class GoTo {
 
             Queue<Segment> segments = convertPathToSegments(finalPath, sprint);
             LOGGER.info("Generated segments: {}", segments);
+
+            if (segments.isEmpty()) {
+                if (hasArrivedAtTarget(bot.blockPosition(), targetPos)) {
+                    return String.format("Bot moved to position - x: %d y: %d z: %d",
+                            bot.blockPosition().getX(), bot.blockPosition().getY(), bot.blockPosition().getZ());
+                }
+                return String.format("⚠️ No movement path produced; bot is at x: %d y: %d z: %d but target is x: %d y: %d z: %d",
+                        bot.blockPosition().getX(), bot.blockPosition().getY(), bot.blockPosition().getZ(), x, y, z);
+            }
 
             // ✅ Trace the path and wait for completion
             CompletableFuture<String> pathFuture = PathTracer.tracePath(server, botSource, botName, segments, sprint);
@@ -53,26 +63,31 @@ public class GoTo {
 
             String finalOutput = "";
 
-            if (result.equals("Path cleared")) {
+            if (hasArrivedAtTarget(bot.blockPosition(), targetPos)) {
                 finalOutput = String.format("Bot moved to position - x: %d y: %d z: %d",
-                        (int) bot.getX(), (int) bot.getY(), (int) bot.getZ());
+                        bot.blockPosition().getX(), bot.blockPosition().getY(), bot.blockPosition().getZ());
+            }
+            else if (result.equals("Path cleared")) {
+                finalOutput = String.format("⚠️ Path cleared before reaching target; bot is at x: %d y: %d z: %d but target is x: %d y: %d z: %d",
+                        bot.blockPosition().getX(), bot.blockPosition().getY(), bot.blockPosition().getZ(), x, y, z);
             }
             else if (result.equals("Player not found")){
                 finalOutput = "Error. Player not found";
             }
             else if (result.equals("Max retries exceeded")) {
-                finalOutput = String.format("Bot moved to position - x: %d y: %d z: %d",
-                        (int) bot.getX(), (int) bot.getY(), (int) bot.getZ());
+                finalOutput = String.format("⚠️ Max retries exceeded before reaching target; bot is at x: %d y: %d z: %d",
+                        bot.blockPosition().getX(), bot.blockPosition().getY(), bot.blockPosition().getZ());
             }
             else if (result.equals("Re-pathing failed")) {
-                finalOutput = String.format("Bot moved to position - x: %d y: %d z: %d",
-                        (int) bot.getX(), (int) bot.getY(), (int) bot.getZ());
+                finalOutput = String.format("⚠️ Re-pathing failed before reaching target; bot is at x: %d y: %d z: %d",
+                        bot.blockPosition().getX(), bot.blockPosition().getY(), bot.blockPosition().getZ());
             }
             else if (result.contains("Path processing failed: ")) {
                 finalOutput = "Error. Path tracer failed to process the pathfinder's data";
             }
             else {
-                finalOutput = PathTracer.BotSegmentManager.tracePathOutput(botSource);
+                finalOutput = String.format("⚠️ Path ended before reaching target; bot is at x: %d y: %d z: %d but target is x: %d y: %d z: %d",
+                        bot.blockPosition().getX(), bot.blockPosition().getY(), bot.blockPosition().getZ(), x, y, z);
             }
 
             System.out.println("Path tracer output: " + result);
@@ -90,5 +105,11 @@ public class GoTo {
             LOGGER.error("Error executing goTo: ", e);
             return "Failed to execute goTo: " + e.getMessage();
         }
+    }
+
+    static boolean hasArrivedAtTarget(BlockPos current, BlockPos target) {
+        return current.getX() == target.getX()
+                && current.getZ() == target.getZ()
+                && Math.abs(current.getY() - target.getY()) <= 1;
     }
 }

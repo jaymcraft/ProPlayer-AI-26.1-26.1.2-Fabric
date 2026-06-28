@@ -1272,82 +1272,32 @@ public class FunctionCallerV2 {
         MinecraftServer server = botSource.getServer();
         ServerPlayer bot = botSource.getPlayer();
         String botName = bot.getName().getString();
-        int ticks = Math.max(1, walkRequest.seconds * 20);
-        int multiplier = "backward".equals(walkRequest.direction) ? -1 : 1;
-        Vec3 start = bot.position();
-        Vec3 look = bot.getViewVector(1.0F);
-        Vec3 horizontal = new Vec3(look.x, 0.0, look.z);
-        if (horizontal.lengthSqr() < 1.0E-6) {
-            Direction facing = bot.getDirection();
-            horizontal = new Vec3(facing.getStepX(), 0.0, facing.getStepZ());
-        }
-        Vec3 offset = horizontal.normalize().scale(walkRequest.blocks * multiplier);
-        Vec3 target = start.add(offset);
+        int clampedSeconds = Math.max(1, Math.min(walkRequest.seconds, 30));
 
         AutoFaceEntity.isBotMoving = true;
         AutoFaceEntity.setBotExecutingTask(true);
 
+        logger.info("Executing strict survival direct walk for {} moving {} for {} seconds",
+                botName, walkRequest.direction, clampedSeconds);
+        server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " move " + walkRequest.direction);
+
         executor.submit(() -> {
-            logger.info("Executing precise direct walk for {} from {} to {} over {} ticks",
-                    botName, start, target, ticks);
             try {
-                rescueBotIfStuck(bot).get(2, TimeUnit.SECONDS);
-            } catch (Exception e) {
-                logger.warn("Could not run unstuck check before direct walk", e);
-            }
-            for (int tick = 0; tick < ticks; tick++) {
-                double progress = (tick + 1) / (double) ticks;
-                Vec3 next = start.lerp(target, progress);
-                CompletableFuture<Boolean> step = new CompletableFuture<>();
-                server.execute(() -> {
-                    if (!canBotOccupy(bot, next)) {
-                        step.complete(false);
-                        return;
-                    }
-                    bot.teleportTo(
-                            bot.level(),
-                            next.x,
-                            next.y,
-                            next.z,
-                            Set.of(),
-                            bot.getYRot(),
-                            bot.getXRot(),
-                            false
-                    );
-                    step.complete(true);
-                });
-
-                try {
-                    if (!step.get(1, TimeUnit.SECONDS)) {
-                        break;
-                    }
-                    Thread.sleep(50L);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                } catch (Exception e) {
-                    logger.warn("Direct walk stopped because movement was blocked", e);
-                    break;
-                }
-            }
-
-            try {
-                Thread.sleep(50L);
+                Thread.sleep(clampedSeconds * 1000L);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
 
             server.execute(() -> {
+                server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " stop");
                 AutoFaceEntity.isBotMoving = false;
                 AutoFaceEntity.setBotExecutingTask(false);
-                String result = canBotOccupy(bot, target)
-                        ? "Walked " + walkRequest.blocks + " blocks " + walkRequest.direction + "."
-                        : "Stopped walking because a solid block was in the way.";
+                String result = "Walked " + walkRequest.direction + " for " + clampedSeconds + " seconds.";
                 getFunctionOutput(result);
                 storeActionMemory("directWalk", Map.of(
                         "blocks", String.valueOf(walkRequest.blocks),
                         "direction", walkRequest.direction,
-                        "seconds", String.valueOf(walkRequest.seconds)
+                        "seconds", String.valueOf(clampedSeconds)
                 ), result);
             });
         });
@@ -2528,27 +2478,17 @@ public class FunctionCallerV2 {
     }
 
     private static String moveDirectlyToMinedTunnelStep(ServerPlayer bot, BlockPos nextFeet) throws Exception {
-        CompletableFuture<String> future = new CompletableFuture<>();
-        botSource.getServer().execute(() -> {
-            Vec3 nextPosition = Vec3.atBottomCenterOf(nextFeet);
-            if (!canBotOccupy(bot, nextPosition, false)) {
-                future.complete("❌ Mined stair step is blocked at " + nextFeet);
-                return;
-            }
+        Vec3 nextPosition = Vec3.atBottomCenterOf(nextFeet);
+        if (!canBotOccupy(bot, nextPosition, false)) {
+            return "❌ Mined stair step is blocked at " + nextFeet;
+        }
 
-            bot.teleportTo(
-                    bot.level(),
-                    nextPosition.x,
-                    nextPosition.y,
-                    nextPosition.z,
-                    Set.of(),
-                    bot.getYRot(),
-                    bot.getXRot(),
-                    false
-            );
-            future.complete("Bot moved to mined stair step " + nextFeet);
-        });
-        return future.get(5, TimeUnit.SECONDS);
+        String moveResult = startPreciseCoordinateMove(nextFeet.getX(), nextFeet.getY(), nextFeet.getZ(), false, false)
+                .get(30, TimeUnit.SECONDS);
+        if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
+            return moveResult;
+        }
+        return "Bot moved to mined stair step " + nextFeet;
     }
 
     private static BlockPos nextTunnelStep(BlockPos currentFeet, BlockPos targetPos) {
@@ -2689,6 +2629,7 @@ public class FunctionCallerV2 {
     }
 
     private static String searchMoveAndMineFirst(ServerPlayer bot, List<String> blockTypes, String label) throws Exception {
+        String lastFailure = "";
         for (String blockType : blockTypes) {
             BlockPos found = net.shasankp000.Tools.SearchBlocks.searchBlock(bot, blockType, 8, 96, 16);
             if (found == null) {
@@ -2697,12 +2638,18 @@ public class FunctionCallerV2 {
 
             String moveResult = moveToInteractionPosition(bot, found);
             if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
+                lastFailure = moveResult;
                 continue;
             }
 
             BlockState minedBlockState = bot.level().getBlockState(found);
             int beforeDrops = countKnownOreDropsForLabel(bot.getInventory(), label);
             String mineResult = MiningTool.mineBlock(bot, found).get(15, TimeUnit.SECONDS);
+            if (mineResult.startsWith("❌") || mineResult.startsWith("⚠️")) {
+                lastFailure = mineResult;
+                logger.info("Could not mine {} candidate {} via {}", label, found, mineResult);
+                continue;
+            }
             if (label.toLowerCase(Locale.ROOT).contains("coal")) {
                 collectNearbyDroppedItems(bot, coalDropItemTypes(), found, 6.0);
             } else if (label.toLowerCase(Locale.ROOT).contains("iron")) {
@@ -2714,6 +2661,9 @@ public class FunctionCallerV2 {
                 logger.info("Recovered mined {} drop directly into inventory after pickup missed it at {}", label, found);
             }
             return "Speedrun mined " + label + " at " + found + ": " + mineResult;
+        }
+        if (!lastFailure.isBlank()) {
+            return "WAIT:I found nearby " + label + ", but couldn't reach and mine it yet: " + lastFailure;
         }
         return "WAIT:I couldn't find nearby " + label + " yet.";
     }
@@ -4276,7 +4226,18 @@ public class FunctionCallerV2 {
     }
 
     private static boolean canSeeBlock(ServerLevel world, ServerPlayer bot, BlockPos targetPos) {
-        Vec3 eyePosition = bot.getEyePosition(1.0F);
+        return canSeeBlockFromEyePosition(world, bot.getEyePosition(1.0F), bot, targetPos);
+    }
+
+    private static boolean canSeeBlockFromPosition(ServerLevel world, ServerPlayer bot, Vec3 feetPosition, BlockPos targetPos) {
+        return canSeeBlockFromEyePosition(world, feetPosition.add(0.0, 1.62, 0.0), bot, targetPos);
+    }
+
+    private static boolean canSeeBlockFromEyePosition(ServerLevel world, Vec3 eyePosition, net.minecraft.world.entity.Entity source, BlockPos targetPos) {
+        if (source == null) {
+            logger.warn("Cannot raycast to {} without a non-null source entity", targetPos);
+            return false;
+        }
         for (Direction direction : Direction.values()) {
             Vec3 faceCenter = Vec3.atCenterOf(targetPos).add(
                     direction.getStepX() * 0.5,
@@ -4293,7 +4254,7 @@ public class FunctionCallerV2 {
                     endInsideTarget,
                     net.minecraft.world.level.ClipContext.Block.COLLIDER,
                     net.minecraft.world.level.ClipContext.Fluid.ANY,
-                    bot
+                    source
             ));
             if (lineOfSight.getType() == net.minecraft.world.phys.HitResult.Type.BLOCK
                     && lineOfSight.getBlockPos().equals(targetPos)) {
@@ -4320,14 +4281,20 @@ public class FunctionCallerV2 {
                 continue;
             }
             if (!lastMoveResult.startsWith("❌") && !lastMoveResult.startsWith("⚠️")) {
-                return lastMoveResult;
+                if (canMineTargetFromCurrentPosition(bot, targetPos)) {
+                    return lastMoveResult;
+                }
+                lastMoveResult = "⚠️ Reached " + candidate + " but target is still not visible or within mining reach";
+                logger.info("{} for target {}", lastMoveResult, targetPos);
+                continue;
             }
 
             String pathResult = GoTo.goTo(botSource, candidate.getX(), candidate.getY(), candidate.getZ(), true, 8);
             if (!pathResult.startsWith("Failed")
                     && !pathResult.startsWith("Error")
                     && !pathResult.startsWith("⚠️")
-                    && bot.blockPosition().distManhattan(candidate) <= 2) {
+                    && bot.blockPosition().distManhattan(candidate) <= 2
+                    && canMineTargetFromCurrentPosition(bot, targetPos)) {
                 return pathResult;
             }
             lastMoveResult = pathResult;
@@ -4347,7 +4314,9 @@ public class FunctionCallerV2 {
                     int y = findStandableBuilderY(world, x, z, targetPos.getY() + yOffset);
                     BlockPos candidate = new BlockPos(x, y, z);
                     Vec3 candidatePosition = new Vec3(x + 0.5, y, z + 0.5);
-                    if (canBotOccupy(bot, candidatePosition, false) && canInteractWithBlockFromPosition(candidatePosition, targetPos)) {
+                    if (canBotOccupy(bot, candidatePosition, false)
+                            && isWithinStrictMiningReach(candidatePosition, targetPos)
+                            && canSeeBlockFromPosition(world, bot, candidatePosition, targetPos)) {
                         candidates.add(candidate);
                     }
                 }
@@ -4862,99 +4831,26 @@ public class FunctionCallerV2 {
 
     private static CompletableFuture<String> startPreciseCoordinateMove(int x, int y, int z, boolean sprint, boolean recordMemory) {
         CompletableFuture<String> future = new CompletableFuture<>();
-        MinecraftServer server = botSource.getServer();
-        ServerPlayer bot = botSource.getPlayer();
-        Vec3 start = bot.position();
-        Vec3 target = new Vec3(x + 0.5, y, z + 0.5);
-        double distance = start.distanceTo(target);
-        double blocksPerSecond = sprint ? 5.612 : 4.317;
-        int ticks = Math.max(1, Math.min(2400, (int) Math.ceil((distance / blocksPerSecond) * 20.0)));
-
-        AutoFaceEntity.isBotMoving = true;
-        AutoFaceEntity.setBotExecutingTask(true);
-
         executor.submit(() -> {
-            logger.info("Executing precise coordinate move from {} to {} over {} ticks", start, target, ticks);
             try {
-                rescueBotIfStuck(bot).get(2, TimeUnit.SECONDS);
-                for (int tick = 0; tick < ticks; tick++) {
-                    double progress = (tick + 1) / (double) ticks;
-                    Vec3 next = start.lerp(target, progress);
-                    CompletableFuture<Boolean> step = new CompletableFuture<>();
-                    server.execute(() -> {
-                        if (!canBotOccupy(bot, next)) {
-                            step.complete(false);
-                            return;
-                        }
-
-                        bot.teleportTo(
-                                bot.level(),
-                                next.x,
-                                next.y,
-                                next.z,
-                                Set.of(),
-                                bot.getYRot(),
-                                bot.getXRot(),
-                                false
-                        );
-                        step.complete(true);
-                    });
-                    if (!step.get(1, TimeUnit.SECONDS)) {
-                        server.execute(() -> {
-                            AutoFaceEntity.isBotMoving = false;
-                            AutoFaceEntity.setBotExecutingTask(false);
-                        });
-                        future.complete("❌ Movement blocked by a solid block");
-                        return;
-                    }
-                    Thread.sleep(50L);
+                logger.info("Executing strict survival coordinate move to {}, {}, {}", x, y, z);
+                ServerPlayer bot = botSource.getPlayer();
+                if (bot != null && !canBotOccupy(bot, bot.position(), false)) {
+                    future.complete("❌ Bot is stuck inside a blocked position; strict survival mode will not rescue-teleport.");
+                    return;
                 }
 
-                server.execute(() -> {
-                    if (!canBotOccupy(bot, target)) {
-                        AutoFaceEntity.isBotMoving = false;
-                        AutoFaceEntity.setBotExecutingTask(false);
-                        future.complete("❌ Movement target is blocked by a solid block");
-                        return;
-                    }
-
-                    bot.teleportTo(
-                            bot.level(),
-                            target.x,
-                            target.y,
-                            target.z,
-                            Set.of(),
-                            bot.getYRot(),
-                            bot.getXRot(),
-                            false
-                    );
-                    AutoFaceEntity.isBotMoving = false;
-                    AutoFaceEntity.setBotExecutingTask(false);
-                    BlockPos pos = bot.blockPosition();
-                    String result = String.format("Bot moved to position - x: %d y: %d z: %d",
-                            pos.getX(), pos.getY(), pos.getZ());
-                    if (recordMemory) {
-                        storeActionMemory("goTo", Map.of(
-                                "x", String.valueOf(x),
-                                "y", String.valueOf(y),
-                                "z", String.valueOf(z),
-                                "sprint", String.valueOf(sprint)
-                        ), result);
-                    }
-                    future.complete(result);
-                });
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                server.execute(() -> {
-                    AutoFaceEntity.isBotMoving = false;
-                    AutoFaceEntity.setBotExecutingTask(false);
-                });
-                future.completeExceptionally(e);
+                String result = GoTo.goTo(botSource, x, y, z, sprint, 120);
+                if (recordMemory) {
+                    storeActionMemory("goTo", Map.of(
+                            "x", String.valueOf(x),
+                            "y", String.valueOf(y),
+                            "z", String.valueOf(z),
+                            "sprint", String.valueOf(sprint)
+                    ), result);
+                }
+                future.complete(result);
             } catch (Exception e) {
-                server.execute(() -> {
-                    AutoFaceEntity.isBotMoving = false;
-                    AutoFaceEntity.setBotExecutingTask(false);
-                });
                 future.completeExceptionally(e);
             }
         });
@@ -4994,29 +4890,7 @@ public class FunctionCallerV2 {
         MinecraftServer server = ((ServerLevel) bot.level()).getServer();
         server.execute(() -> {
             Vec3 current = bot.position();
-            if (canBotOccupy(bot, current)) {
-                future.complete(true);
-                return;
-            }
-
-            Optional<Vec3> safePosition = findNearestSafePosition(bot, current);
-            if (safePosition.isEmpty()) {
-                future.complete(false);
-                return;
-            }
-
-            Vec3 safe = safePosition.get();
-            bot.teleportTo(
-                    bot.level(),
-                    safe.x,
-                    safe.y,
-                    safe.z,
-                    Set.of(),
-                    bot.getYRot(),
-                    bot.getXRot(),
-                    false
-            );
-            future.complete(true);
+            future.complete(canBotOccupy(bot, current));
         });
         return future;
     }
@@ -6122,6 +5996,15 @@ public class FunctionCallerV2 {
 
     private static boolean isWithinInteractionRange(ServerPlayer bot, BlockPos targetPos) {
         return canInteractWithBlockFromPosition(bot.position(), targetPos);
+    }
+
+    static boolean isWithinStrictMiningReach(Vec3 feetPosition, BlockPos targetPos) {
+        return SurvivalReach.isWithinStrictMiningReach(feetPosition, targetPos);
+    }
+
+    private static boolean canMineTargetFromCurrentPosition(ServerPlayer bot, BlockPos targetPos) {
+        return isWithinStrictMiningReach(bot.position(), targetPos)
+                && canSeeBlock((ServerLevel) bot.level(), bot, targetPos);
     }
 
     private static boolean canInteractWithBlockFromPosition(Vec3 feetPosition, BlockPos targetPos) {
@@ -7683,7 +7566,9 @@ public class FunctionCallerV2 {
 
         for (BlockPos candidate : candidates) {
             Vec3 standCenter = Vec3.atBottomCenterOf(candidate);
-            if (targetBlock.distToCenterSqr(standCenter) <= 25.0 && canBotOccupy(bot, standCenter, false)) {
+            if (isWithinStrictMiningReach(standCenter, targetBlock)
+                    && canBotOccupy(bot, standCenter, false)
+                    && canSeeBlockFromPosition((ServerLevel) bot.level(), bot, standCenter, targetBlock)) {
                 return candidate;
             }
         }

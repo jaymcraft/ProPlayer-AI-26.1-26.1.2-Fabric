@@ -639,7 +639,7 @@ public class BotEventHandler {
         }
 
         Entity visibleTarget = HostileMobAttackTool.findBestVisibleHostileMob(bot);
-        if (visibleTarget != null && bot.position().distanceTo(visibleTarget.position()) <= HostileMobAttackTool.MELEE_ATTACK_REACH) {
+        if (visibleTarget != null && SurvivalInteractionValidator.canReachVisibleEntity(bot, visibleTarget)) {
             System.out.println("STAY overridden: visible hostile in melee range, attacking instead");
             return StateActions.Action.ATTACK;
         }
@@ -1123,7 +1123,7 @@ public class BotEventHandler {
 
         if (!weaponReady) {
             LOGGER.warn("⚠ Could not equip {} - falling back to melee", weaponType);
-            if (distance <= HostileMobAttackTool.MELEE_ATTACK_REACH) {
+            if (distance <= SurvivalInteractionValidator.entityReach(bot)) {
                 server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " attack");
             } else {
                 executeMeleeRush(bot, hostiles, strategy, server, botSource, botName);
@@ -1179,7 +1179,7 @@ public class BotEventHandler {
 
         // Move forward while blocking until close enough for a 3 block melee attack.
         int advanceDuration = (int) Math.min(3000,
-                Math.max(0.0, distance - HostileMobAttackTool.MELEE_ATTACK_REACH) * 200); // ~200ms per block
+                Math.max(0.0, distance - SurvivalInteractionValidator.entityReach(bot)) * 200); // ~200ms per block
         LOGGER.info("🛡 Advancing for {}ms", advanceDuration);
 
         server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " sprint");
@@ -1193,10 +1193,10 @@ public class BotEventHandler {
                 server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " stop");
 
                 double currentDistance = Math.sqrt(target.distanceToSqr(bot));
-                if (currentDistance > HostileMobAttackTool.MELEE_ATTACK_REACH) {
+                if (!SurvivalInteractionValidator.canReachVisibleEntity(bot, target)) {
                     LOGGER.info("🛡 Shield advance stopped at {}m, outside {} block attack reach",
                             String.format("%.1f", currentDistance),
-                            String.format("%.1f", HostileMobAttackTool.MELEE_ATTACK_REACH));
+                            String.format("%.1f", SurvivalInteractionValidator.entityReach(bot)));
                     return;
                 }
 
@@ -1235,29 +1235,29 @@ public class BotEventHandler {
         // Sprint toward the target and only swing once the target is within 3 blocks.
         server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " sprint");
 
-        if (distance <= HostileMobAttackTool.MELEE_ATTACK_REACH) {
+        if (SurvivalInteractionValidator.canReachVisibleEntity(bot, target)) {
             server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " attack continuous");
             LOGGER.info("✓ Melee rush attacking within {} block reach",
-                    String.format("%.1f", HostileMobAttackTool.MELEE_ATTACK_REACH));
+                    String.format("%.1f", SurvivalInteractionValidator.entityReach(bot)));
             return;
         }
 
         server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " move forward");
         int approachDuration = (int) Math.min(3000,
-                Math.max(0.0, distance - HostileMobAttackTool.MELEE_ATTACK_REACH) * 200);
+                Math.max(0.0, distance - SurvivalInteractionValidator.entityReach(bot)) * 200);
 
         executor.schedule(() -> {
             server.execute(() -> {
                 server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " stop");
 
                 double currentDistance = Math.sqrt(target.distanceToSqr(bot));
-                if (currentDistance <= HostileMobAttackTool.MELEE_ATTACK_REACH) {
+                if (SurvivalInteractionValidator.canReachVisibleEntity(bot, target)) {
                     server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " attack continuous");
                     LOGGER.info("✓ Melee rush reached {}m and started attacking", String.format("%.1f", currentDistance));
                 } else {
                     LOGGER.info("Melee rush stopped at {}m, outside {} block attack reach",
                             String.format("%.1f", currentDistance),
-                            String.format("%.1f", HostileMobAttackTool.MELEE_ATTACK_REACH));
+                            String.format("%.1f", SurvivalInteractionValidator.entityReach(bot)));
                 }
             });
         }, approachDuration, TimeUnit.MILLISECONDS);
@@ -1311,17 +1311,17 @@ public class BotEventHandler {
 
             // Schedule attack when close enough for a 3 block melee attack.
             int approachTime = (int) Math.min(3000,
-                    Math.max(0.0, distance - HostileMobAttackTool.MELEE_ATTACK_REACH) * 150);
+                    Math.max(0.0, distance - SurvivalInteractionValidator.entityReach(bot)) * 150);
             executor.schedule(() -> {
                 server.execute(() -> {
                     server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " stop");
                     server.getCommands().performPrefixedCommand(botSource, "/player " + botName + " jump");
 
                     double currentDistance = Math.sqrt(target.distanceToSqr(bot));
-                    if (currentDistance > HostileMobAttackTool.MELEE_ATTACK_REACH) {
+                    if (!SurvivalInteractionValidator.canReachVisibleEntity(bot, target)) {
                         LOGGER.info("Evasive melee stopped at {}m, outside {} block attack reach",
                                 String.format("%.1f", currentDistance),
-                                String.format("%.1f", HostileMobAttackTool.MELEE_ATTACK_REACH));
+                                String.format("%.1f", SurvivalInteractionValidator.entityReach(bot)));
                         return;
                     }
 

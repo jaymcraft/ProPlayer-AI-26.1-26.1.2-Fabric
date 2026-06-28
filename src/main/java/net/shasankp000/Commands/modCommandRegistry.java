@@ -111,11 +111,6 @@ public class modCommandRegistry {
                                         .executes(context -> { botJump(context); return 1; })
                                 )
                         )
-                        .then(literal("teleport_forward")
-                                .then(Commands.argument("bot", EntityArgument.player())
-                                        .executes(context -> { teleportForward(context); return 1; })
-                                )
-                        )
                         .then(literal("test_chat_message")
                                 .then(Commands.argument("bot", EntityArgument.player())
                                         .executes(context -> { testChatMessage(context); return 1; })
@@ -1177,7 +1172,7 @@ public class modCommandRegistry {
             return;
         }
 
-        attackReach.setBaseValue(HostileMobAttackTool.MELEE_ATTACK_REACH);
+        attackReach.setBaseValue(3.0D);
     }
 
     private static String getExceptionSummary(Exception e) {
@@ -1222,33 +1217,6 @@ public class modCommandRegistry {
 
         }
 
-
-    }
-
-    private static void teleportForward(CommandContext<CommandSourceStack> context) {
-        MinecraftServer server = context.getSource().getServer();
-
-        ServerPlayer bot = null;
-        try {bot = EntityArgument.getPlayer(context, "bot");} catch (CommandSyntaxException ignored) {}
-
-        if (bot == null) {
-
-            context.getSource().sendSystemMessage(Component.nullToEmpty("The requested bot could not be found on the server!"));
-            server.sendSystemMessage(Component.literal("Error! Bot not found!"));
-            LOGGER.error("The requested bot could not be found on the server!");
-
-        }
-
-        else {
-            String botName = bot.getName().tryCollapseToString();
-
-            BlockPos currentPosition = bot.blockPosition();
-            BlockPos newPosition = currentPosition.offset(1, 0, 0); // Move one block forward
-            bot.teleportTo(bot.level(), newPosition.getX(), newPosition.getY(), newPosition.getZ(), Set.of(), bot.getYRot(), bot.getXRot(), false);
-
-            LOGGER.info("Teleported {} 1 positive block ahead", botName);
-
-        }
 
     }
 

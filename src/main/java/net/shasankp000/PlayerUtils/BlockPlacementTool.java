@@ -22,8 +22,6 @@ import net.shasankp000.Entity.LookController;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.List;
-import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 
 public class BlockPlacementTool {
@@ -106,12 +104,10 @@ public class BlockPlacementTool {
                 }
 
                 if (botIntersectsTargetBlock(bot, targetPos)) {
-                    String moveResult = moveAwayFromPlacementTarget(bot, targetPos);
-                    if (moveResult.startsWith("❌") || moveResult.startsWith("⚠️")) {
-                        LOGGER.warn(moveResult);
-                        return moveResult;
-                    }
-                    LOGGER.info(moveResult);
+                    String error = "❌ Bot is standing in the placement target at " + targetPos
+                            + "; strict survival mode will not teleport away. Move first, then place the block.";
+                    LOGGER.warn(error);
+                    return error;
                 }
 
                 // Step 6: Find a suitable face to place against
@@ -182,42 +178,6 @@ public class BlockPlacementTool {
 
     private static boolean botIntersectsTargetBlock(ServerPlayer bot, BlockPos targetPos) {
         return blockBox(targetPos).intersects(bot.getBoundingBox().inflate(0.01));
-    }
-
-    private static String moveAwayFromPlacementTarget(ServerPlayer bot, BlockPos targetPos) {
-        Level world = bot.level();
-        List<BlockPos> candidates = List.of(
-                bot.blockPosition().north(),
-                bot.blockPosition().south(),
-                bot.blockPosition().east(),
-                bot.blockPosition().west(),
-                targetPos.north(),
-                targetPos.south(),
-                targetPos.east(),
-                targetPos.west(),
-                bot.blockPosition().above()
-        );
-
-        for (BlockPos candidate : candidates) {
-            if (candidate.equals(targetPos) || !canStandForPlacement(bot, world, candidate, targetPos)) {
-                continue;
-            }
-
-            Vec3 position = Vec3.atBottomCenterOf(candidate);
-            bot.teleportTo(
-                    bot.level(),
-                    position.x,
-                    position.y,
-                    position.z,
-                    Set.of(),
-                    bot.getYRot(),
-                    bot.getXRot(),
-                    false
-            );
-            return "Moved away from placement target " + targetPos + " to " + candidate;
-        }
-
-        return "❌ Bot is standing in the placement target at " + targetPos + " and no safe adjacent step was found";
     }
 
     private static boolean canStandForPlacement(ServerPlayer bot, Level world, BlockPos feet, BlockPos targetPos) {

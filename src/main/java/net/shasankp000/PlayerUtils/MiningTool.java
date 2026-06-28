@@ -3,6 +3,7 @@ package net.shasankp000.PlayerUtils;
 import java.util.concurrent.*;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
+import net.minecraft.network.protocol.game.ServerboundPlayerActionPacket;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.tags.BlockTags;
 import net.minecraft.world.item.ItemStack;
@@ -18,88 +19,28 @@ import org.slf4j.LoggerFactory;
 
 public class MiningTool {
 
-    private static final long ATTACK_INTERVAL_MS = 200;
+    private static final long MINING_TICK_MS = 50;
     private static final double MAX_MINING_DISTANCE = 5.0;
     private static final int MAX_LEAF_OBSTRUCTIONS_TO_CLEAR = 4;
-    private static final long LEAF_CLEAR_TIMEOUT_MS = 1200;
+    private static final long LEAF_CLEAR_TIMEOUT_MS = 5000;
+    private static final long MAX_BLOCK_BREAK_TIMEOUT_MS = 30000;
     public static final Logger LOGGER = LoggerFactory.getLogger("mining-tool");
 
     public static CompletableFuture<String> mineBlock(ServerPlayer bot, BlockPos targetBlockPos) {
         CompletableFuture<String> miningResult = new CompletableFuture<>();
-        try {
-
-
-                ScheduledExecutorService miningExecutor = Executors.newSingleThreadScheduledExecutor();
-
-                // Step 1: Face the block
-                LookController.faceBlock(bot, targetBlockPos);
-
+        ExecutorService miningExecutor = Executors.newSingleThreadExecutor();
+        miningExecutor.submit(() -> {
+            try {
                 clearLeafObstructions(bot, targetBlockPos);
-
-                if (!canReachVisibleBlock(bot, targetBlockPos)) {
-                    miningResult.complete("❌ Cannot mine through blocks at " + targetBlockPos);
-                    miningExecutor.shutdownNow();
-                    return miningResult;
-                }
-
-                // Step 2: Select best tool
-                BlockState blockState = bot.level().getBlockState(targetBlockPos);
-                ItemStack bestTool = ToolSelector.selectBestToolForBlock(bot, blockState);
-                if (bestTool.isEmpty()) {
-                    if (blockState.requiresCorrectToolForDrops()) {
-                        miningResult.complete("❌ No usable tool for " + blockState.getBlock().getName().getString() + " at " + targetBlockPos);
-                        miningExecutor.shutdownNow();
-                        return miningResult;
-                    }
-                    bestTool = bot.getMainHandItem();
-                }
-
-                // Step 3: Switch to that tool
-                switchToTool(bot, bestTool);
-
-                // Step 4: Start mining loop
-                ScheduledFuture<?> task = miningExecutor.scheduleAtFixedRate(() -> {
-                    BlockState currentState = bot.level().getBlockState(targetBlockPos);
-
-                    if (currentState.isAir()) {
-                        System.out.println("✅ Mining complete!");
-                        miningResult.complete("Mining complete!");
-                        miningExecutor.shutdownNow();
-                        return;
-                    }
-
-                    if (!canReachVisibleBlock(bot, targetBlockPos)) {
-                        clearLeafObstructions(bot, targetBlockPos);
-                        if (!canReachVisibleBlock(bot, targetBlockPos)) {
-                            String error = "❌ Cannot mine through blocks at " + targetBlockPos;
-                            LOGGER.warn(error);
-                            miningResult.complete(error);
-                            miningExecutor.shutdownNow();
-                            return;
-                        }
-                    }
-
-                    bot.swing(bot.getUsedItemHand());
-                    bot.gameMode.destroyBlock(targetBlockPos);
-                    System.out.println("⛏️ Mining...");
-
-                }, 0, ATTACK_INTERVAL_MS, TimeUnit.MILLISECONDS);
-
-                // In case something else cancels this process
-                miningResult.whenComplete((result, error) -> {
-                    if (!task.isCancelled() && !task.isDone()) {
-                        task.cancel(true);
-                    }
-                    if (!miningExecutor.isShutdown()) {
-                        miningExecutor.shutdownNow();
-                    }
-                });
-
-
-        }
-        catch (Exception e) {
-            LOGGER.error("Error in mining tool! {}", e.getMessage());
-        }
+                mineVisibleBlockSurvival(bot, targetBlockPos, MAX_BLOCK_BREAK_TIMEOUT_MS, "Mining complete!", miningResult);
+            }
+            catch (Exception e) {
+                LOGGER.error("Error in mining tool! {}", e.getMessage());
+                miningResult.complete("⚠️ Failed to mine block: " + e.getMessage());
+            } finally {
+                miningExecutor.shutdownNow();
+            }
+        });
 
         return miningResult;
     }
@@ -116,7 +57,11 @@ public class MiningTool {
             }
 
             LOGGER.info("Clearing leaf obstruction {} before mining {}", leafPos, targetBlockPos);
-            mineObstruction(bot, leafPos);
+            boolean cleared = mineObstruction(bot, leafPos);
+            if (!cleared) {
+                LOGGER.warn("Could not clear leaf obstruction {} before timeout", leafPos);
+                return;
+            }
             LookController.faceBlock(bot, targetBlockPos);
         }
     }
@@ -160,37 +105,138 @@ public class MiningTool {
         return null;
     }
 
-    private static void mineObstruction(ServerPlayer bot, BlockPos obstructionPos) {
+    private static boolean mineObstruction(ServerPlayer bot, BlockPos obstructionPos) {
         try {
-            BlockState obstructionState = bot.level().getBlockState(obstructionPos);
-            ItemStack bestTool = ToolSelector.selectBestToolForBlock(bot, obstructionState);
-            switchToTool(bot, bestTool);
-            LookController.faceBlock(bot, obstructionPos);
-
-            long deadline = System.currentTimeMillis() + LEAF_CLEAR_TIMEOUT_MS;
-            while (!bot.level().getBlockState(obstructionPos).isAir() && System.currentTimeMillis() < deadline) {
-                bot.swing(bot.getUsedItemHand());
-                bot.gameMode.destroyBlock(obstructionPos);
-                Thread.sleep(100L);
-            }
+            return mineVisibleBlockSurvival(bot, obstructionPos, LEAF_CLEAR_TIMEOUT_MS, "Leaf obstruction cleared", null);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
+            return false;
         } catch (Exception e) {
             LOGGER.warn("Failed to clear leaf obstruction {}: {}", obstructionPos, e.getMessage());
+            return false;
+        }
+    }
+
+    private static boolean mineVisibleBlockSurvival(
+            ServerPlayer bot,
+            BlockPos targetBlockPos,
+            long timeoutMs,
+            String successMessage,
+            CompletableFuture<String> resultFuture
+    ) throws InterruptedException {
+        LookController.faceBlock(bot, targetBlockPos);
+
+        BlockHitResult visibleHit = getVisibleHitResult(bot, targetBlockPos);
+        if (visibleHit == null) {
+            completeIfPresent(resultFuture, "❌ Cannot mine through blocks at " + targetBlockPos);
+            return false;
+        }
+
+        BlockState blockState = bot.level().getBlockState(targetBlockPos);
+        if (blockState.isAir()) {
+            completeIfPresent(resultFuture, successMessage);
+            return true;
+        }
+
+        ItemStack bestTool = ToolSelector.selectBestToolForBlock(bot, blockState);
+        if (bestTool.isEmpty()) {
+            if (blockState.requiresCorrectToolForDrops()) {
+                completeIfPresent(resultFuture, "❌ No usable tool for "
+                        + blockState.getBlock().getName().getString() + " at " + targetBlockPos);
+                return false;
+            }
+            bestTool = bot.getMainHandItem();
+        }
+        switchToTool(bot, bestTool);
+
+        float destroyProgressPerTick = blockState.getDestroyProgress(bot, bot.level(), targetBlockPos);
+        if (destroyProgressPerTick <= 0.0F) {
+            completeIfPresent(resultFuture, "❌ Block cannot be mined in survival at " + targetBlockPos);
+            return false;
+        }
+
+        long estimatedBreakMs = (long) Math.ceil((1.0F / destroyProgressPerTick) * MINING_TICK_MS);
+        long deadline = System.currentTimeMillis() + Math.min(timeoutMs, Math.max(estimatedBreakMs + 1500L, 1000L));
+        int sequence = 0;
+
+        bot.gameMode.handleBlockBreakAction(
+                targetBlockPos,
+                ServerboundPlayerActionPacket.Action.START_DESTROY_BLOCK,
+                visibleHit.getDirection(),
+                bot.level().getMaxY(),
+                sequence++
+        );
+
+        boolean sentStop = false;
+        try {
+            while (System.currentTimeMillis() <= deadline) {
+                BlockState currentState = bot.level().getBlockState(targetBlockPos);
+                if (currentState.isAir()) {
+                    completeIfPresent(resultFuture, successMessage);
+                    return true;
+                }
+
+                visibleHit = getVisibleHitResult(bot, targetBlockPos);
+                if (visibleHit == null) {
+                    completeIfPresent(resultFuture, "❌ Cannot mine through blocks at " + targetBlockPos);
+                    return false;
+                }
+
+                bot.swing(bot.getUsedItemHand());
+                if (!sentStop && System.currentTimeMillis() + MINING_TICK_MS >= deadline - 500L) {
+                    bot.gameMode.handleBlockBreakAction(
+                            targetBlockPos,
+                            ServerboundPlayerActionPacket.Action.STOP_DESTROY_BLOCK,
+                            visibleHit.getDirection(),
+                            bot.level().getMaxY(),
+                            sequence++
+                    );
+                    sentStop = true;
+                }
+                Thread.sleep(MINING_TICK_MS);
+            }
+
+            if (bot.level().getBlockState(targetBlockPos).isAir()) {
+                completeIfPresent(resultFuture, successMessage);
+                return true;
+            }
+
+            completeIfPresent(resultFuture, "⚠️ Mining timed out before the block broke at " + targetBlockPos);
+            return false;
+        } finally {
+            if (!bot.level().getBlockState(targetBlockPos).isAir()) {
+                bot.gameMode.handleBlockBreakAction(
+                        targetBlockPos,
+                        ServerboundPlayerActionPacket.Action.ABORT_DESTROY_BLOCK,
+                        visibleHit != null ? visibleHit.getDirection() : Direction.UP,
+                        bot.level().getMaxY(),
+                        sequence
+                );
+            }
+        }
+    }
+
+    private static void completeIfPresent(CompletableFuture<String> future, String result) {
+        if (future != null && !future.isDone()) {
+            future.complete(result);
         }
     }
 
     private static boolean canReachVisibleBlock(ServerPlayer bot, BlockPos targetBlockPos) {
+        return getVisibleHitResult(bot, targetBlockPos) != null;
+    }
+
+    private static BlockHitResult getVisibleHitResult(ServerPlayer bot, BlockPos targetBlockPos) {
         double distance = Math.sqrt(targetBlockPos.distToCenterSqr(bot.position()));
         if (distance > MAX_MINING_DISTANCE) {
             LOGGER.warn("Target block {} is too far to mine: {} blocks", targetBlockPos, distance);
-            return false;
+            return null;
         }
 
         Level world = bot.level();
         BlockState targetState = world.getBlockState(targetBlockPos);
         if (targetState.isAir()) {
-            return true;
+            return new BlockHitResult(Vec3.atCenterOf(targetBlockPos), Direction.UP, targetBlockPos, false);
         }
 
         for (Direction direction : Direction.values()) {
@@ -212,11 +258,11 @@ public class MiningTool {
                     bot
             ));
             if (lineOfSight.getType() == HitResult.Type.BLOCK && lineOfSight.getBlockPos().equals(targetBlockPos)) {
-                return true;
+                return lineOfSight;
             }
         }
 
-        return false;
+        return null;
     }
 
     private static void switchToTool(ServerPlayer bot, ItemStack tool) {

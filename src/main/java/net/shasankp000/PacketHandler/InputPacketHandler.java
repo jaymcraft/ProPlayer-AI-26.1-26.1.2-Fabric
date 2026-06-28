@@ -21,7 +21,6 @@ import org.slf4j.LoggerFactory;
 public class InputPacketHandler {
 
     public static final Logger LOGGER = LoggerFactory.getLogger("ai-player");
-    private static int ticksRemaining = 0;
     private static Vec3 lastPosition = null;
 
     public static class BotLookController {
@@ -273,7 +272,7 @@ public class InputPacketHandler {
         System.out.println("Recorded current bot position as last pos: " + lastPosition);
 
         try {
-            ticksRemaining = 20; // Number of ticks to hold the key
+            final int[] movementTicksRemaining = {20}; // Number of ticks to hold the key
 
             Direction direction = bot.getDirection();
             System.out.println(direction.getAxis().getName());
@@ -282,20 +281,19 @@ public class InputPacketHandler {
 
                 final ServerPlayer[] finalBot = { bot };
                 ServerTickEvents.END_SERVER_TICK.register(server1 -> {
-                    if (ticksRemaining > 0) {
+                    if (movementTicksRemaining[0] > 0) {
 
                         // Manually update the bot's position
                         Vec3 forwardMovement = finalBot[0].getViewVector(1.0F).scale(0.1);
-                        finalBot[0].setPosRaw(finalBot[0].getX() + forwardMovement.x, finalBot[0].getY(),
-                                finalBot[0].getZ());
+                        moveWithSurvivalPhysics(finalBot[0], new Vec3(forwardMovement.x, 0.0, 0.0));
                         System.out.println("Updating movement value for S key by 1");
 
-                        ticksRemaining--;
+                        movementTicksRemaining[0]--;
 
                     }
                 });
 
-                if (ticksRemaining <= 0) {
+                if (movementTicksRemaining[0] <= 0) {
                     System.out.println("Current bot position: " + finalBot[0].position());
                 }
 
@@ -305,20 +303,19 @@ public class InputPacketHandler {
 
                 final ServerPlayer[] finalBot = { bot };
                 ServerTickEvents.END_SERVER_TICK.register(server1 -> {
-                    if (ticksRemaining > 0) {
+                    if (movementTicksRemaining[0] > 0) {
 
                         // Manually update the bot's position
                         Vec3 forwardMovement = finalBot[0].getViewVector(1.0F).scale(0.1);
-                        finalBot[0].setPosRaw(finalBot[0].getX(), finalBot[0].getY(),
-                                finalBot[0].getZ() + forwardMovement.z);
+                        moveWithSurvivalPhysics(finalBot[0], new Vec3(0.0, 0.0, forwardMovement.z));
                         System.out.println("Updating movement value for S key by 1");
 
-                        ticksRemaining--;
+                        movementTicksRemaining[0]--;
 
                     }
                 });
 
-                if (ticksRemaining <= 0) {
+                if (movementTicksRemaining[0] <= 0) {
                     System.out.println("Current bot position: " + finalBot[0].position());
                 }
 
@@ -366,7 +363,7 @@ public class InputPacketHandler {
         System.out.println("Recorded current bot position as last pos: " + lastPosition);
 
         try {
-            ticksRemaining = 20; // Number of ticks to hold the key
+            final int[] movementTicksRemaining = {20}; // Number of ticks to hold the key
 
             Direction direction = bot.getDirection();
             System.out.println(direction.getAxis().getName());
@@ -375,20 +372,19 @@ public class InputPacketHandler {
 
                 final ServerPlayer[] finalBot = { bot };
                 ServerTickEvents.END_SERVER_TICK.register(server1 -> {
-                    if (ticksRemaining > 0) {
+                    if (movementTicksRemaining[0] > 0) {
 
                         // Manually update the bot's position
                         Vec3 forwardMovement = finalBot[0].getViewVector(1.0F).scale(-0.1);
-                        finalBot[0].setPosRaw(finalBot[0].getX() + forwardMovement.x, finalBot[0].getY(),
-                                finalBot[0].getZ());
+                        moveWithSurvivalPhysics(finalBot[0], new Vec3(forwardMovement.x, 0.0, 0.0));
                         System.out.println("Updating movement value for S key by 1");
 
-                        ticksRemaining--;
+                        movementTicksRemaining[0]--;
 
                     }
                 });
 
-                if (ticksRemaining <= 0) {
+                if (movementTicksRemaining[0] <= 0) {
                     System.out.println("Current bot position: " + finalBot[0].position());
                 }
 
@@ -398,20 +394,19 @@ public class InputPacketHandler {
 
                 final ServerPlayer[] finalBot = { bot };
                 ServerTickEvents.END_SERVER_TICK.register(server1 -> {
-                    if (ticksRemaining > 0) {
+                    if (movementTicksRemaining[0] > 0) {
 
                         // Manually update the bot's position
                         Vec3 forwardMovement = finalBot[0].getViewVector(1.0F).scale(-0.1);
-                        finalBot[0].setPosRaw(finalBot[0].getX(), finalBot[0].getY(),
-                                finalBot[0].getZ() + forwardMovement.z);
+                        moveWithSurvivalPhysics(finalBot[0], new Vec3(0.0, 0.0, forwardMovement.z));
                         System.out.println("Updating movement value for S key by 1");
 
-                        ticksRemaining--;
+                        movementTicksRemaining[0]--;
 
                     }
                 });
 
-                if (ticksRemaining <= 0) {
+                if (movementTicksRemaining[0] <= 0) {
                     System.out.println("Current bot position: " + finalBot[0].position());
                 }
 
@@ -460,7 +455,7 @@ public class InputPacketHandler {
         System.out.println("Recorded current bot position as last pos: " + lastPosition);
 
         try {
-            ticksRemaining = 20; // Number of ticks to hold the key
+            final int[] movementTicksRemaining = {20}; // Number of ticks to hold the key
 
             Direction direction = bot.getDirection();
             System.out.println(direction.getAxis().getName());
@@ -470,36 +465,34 @@ public class InputPacketHandler {
             if (direction.getAxis().equals(Direction.Axis.X)) {
 
                 ServerTickEvents.END_SERVER_TICK.register(server1 -> {
-                    if (ticksRemaining > 0) {
+                    if (movementTicksRemaining[0] > 0) {
                         // Manually update the bot's position
                         Vec3 forwardMovement = finalBot[0].getViewVector(2.5F).scale(0.3);
-                        finalBot[0].setPosRaw(finalBot[0].getX(), finalBot[0].getY(),
-                                finalBot[0].getZ() + forwardMovement.z());
+                        moveWithSurvivalPhysics(finalBot[0], new Vec3(0.0, 0.0, forwardMovement.z()));
                         System.out.println("Updating movement value for A key");
 
-                        ticksRemaining--;
+                        movementTicksRemaining[0]--;
                     }
                 });
 
-                if (ticksRemaining <= 0) {
+                if (movementTicksRemaining[0] <= 0) {
                     System.out.println("Current bot position: " + finalBot[0].position());
                 }
 
             } else if (direction.getAxis().equals(Direction.Axis.Z)) {
 
                 ServerTickEvents.END_SERVER_TICK.register(server1 -> {
-                    if (ticksRemaining > 0) {
+                    if (movementTicksRemaining[0] > 0) {
                         // Manually update the bot's position
                         Vec3 forwardMovement = finalBot[0].getViewVector(2.5F).scale(0.3);
-                        finalBot[0].setPosRaw(finalBot[0].getX() + forwardMovement.x(), finalBot[0].getY(),
-                                finalBot[0].getZ());
+                        moveWithSurvivalPhysics(finalBot[0], new Vec3(forwardMovement.x(), 0.0, 0.0));
                         System.out.println("Updating movement value for A key");
 
-                        ticksRemaining--;
+                        movementTicksRemaining[0]--;
                     }
                 });
 
-                if (ticksRemaining <= 0) {
+                if (movementTicksRemaining[0] <= 0) {
                     System.out.println("Current bot position: " + finalBot[0].position());
                 }
 
@@ -548,7 +541,7 @@ public class InputPacketHandler {
         System.out.println("Recorded current bot position as last pos: " + lastPosition);
 
         try {
-            ticksRemaining = 20; // Number of ticks to hold the key
+            final int[] movementTicksRemaining = {20}; // Number of ticks to hold the key
 
             Direction direction = bot.getDirection();
             System.out.println(direction.getAxis().getName());
@@ -558,36 +551,34 @@ public class InputPacketHandler {
             if (direction.getAxis().equals(Direction.Axis.X)) {
 
                 ServerTickEvents.END_SERVER_TICK.register(server1 -> {
-                    if (ticksRemaining > 0) {
+                    if (movementTicksRemaining[0] > 0) {
                         // Manually update the bot's position
                         Vec3 forwardMovement = finalBot[0].getViewVector(2.5F).scale(-0.3);
-                        finalBot[0].setPosRaw(finalBot[0].getX(), finalBot[0].getY(),
-                                finalBot[0].getZ() + forwardMovement.z());
+                        moveWithSurvivalPhysics(finalBot[0], new Vec3(0.0, 0.0, forwardMovement.z()));
                         System.out.println("Updating movement value for A key");
 
-                        ticksRemaining--;
+                        movementTicksRemaining[0]--;
                     }
                 });
 
-                if (ticksRemaining <= 0) {
+                if (movementTicksRemaining[0] <= 0) {
                     System.out.println("Current bot position: " + finalBot[0].position());
                 }
 
             } else if (direction.getAxis().equals(Direction.Axis.Z)) {
 
                 ServerTickEvents.END_SERVER_TICK.register(server1 -> {
-                    if (ticksRemaining > 0) {
+                    if (movementTicksRemaining[0] > 0) {
                         // Manually update the bot's position
                         Vec3 forwardMovement = finalBot[0].getViewVector(2.5F).scale(-0.3);
-                        finalBot[0].setPosRaw(finalBot[0].getX() + forwardMovement.x(), finalBot[0].getY(),
-                                finalBot[0].getZ());
+                        moveWithSurvivalPhysics(finalBot[0], new Vec3(forwardMovement.x(), 0.0, 0.0));
                         System.out.println("Updating movement value for A key");
 
-                        ticksRemaining--;
+                        movementTicksRemaining[0]--;
                     }
                 });
 
-                if (ticksRemaining <= 0) {
+                if (movementTicksRemaining[0] <= 0) {
                     System.out.println("Current bot position: " + finalBot[0].position());
                 }
 
@@ -635,6 +626,17 @@ public class InputPacketHandler {
         } catch (Exception e) {
             LOGGER.error("Caught exception while sending release movement key packet: {}", e.getMessage());
         }
+    }
+
+    /**
+     * The input packet sent by the caller is the only movement request.  Position
+     * writes and direct Entity.move calls bypass the normal player travel pipeline
+     * and can clip a fake player through blocks, so this deliberately does not
+     * perform a second server-side position correction.
+     */
+    private static void moveWithSurvivalPhysics(ServerPlayer bot, Vec3 requestedOffset) {
+        // ServerGamePacketListenerImpl.handlePlayerInput above records the normal
+        // player input. The player tick owns travel, collision, gravity and speed.
     }
 
 }
