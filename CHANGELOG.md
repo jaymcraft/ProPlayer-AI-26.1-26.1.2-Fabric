@@ -4,6 +4,24 @@
 
 ---
 
+## June 2026
+
+### v1.0.5.4-release+26.2
+
+#### Added
+- Minecraft `26.2` support with Fabric Loader `0.19.2` and Fabric API `0.150.3+26.2`.
+- MarkovStats unit tests covering transition counts, total tracking, unsigned byte action IDs, and Laplace-smoothed probabilities.
+
+#### Fixed
+- Removed the hardcoded local `org.gradle.java.home` from Gradle properties so CI and other machines can use their configured Java toolchains.
+- Fixed and continued portal-prep behavior around fluid casting/tool interactions.
+
+#### Changed
+- Updated the documented build/runtime requirement to Java `25`.
+- Kept the fork metadata aligned with `1.0.5.4-release+26.2`.
+
+---
+
 ## November 2025
 
 ### Major Features & Improvements
@@ -1329,4 +1347,3 @@ Updates shared state with placement information:
 ---
 
 *Last Updated: February 5, 2026*
-

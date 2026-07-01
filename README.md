@@ -24,6 +24,25 @@ This mod relies on the internal code of the Carpet mod, please star the reposito
 
 1.Modrinth still waiting to be acepted
 
+# Changelog v1.0.5.4-release+26.2
+
+This fork is now updated for Minecraft `26.2` with Fabric Loader `0.19.2`, Fabric API `0.150.3+26.2`, and Java `25`.
+
+## Added
+
+- Added Minecraft `26.2` support and updated the mod metadata/dependency versions for the current Fabric toolchain.
+- Added MarkovStats unit tests for transition counts, total tracking, unsigned byte action IDs, and Laplace-smoothed probabilities.
+
+## Fixed
+
+- Fixed Gradle CI portability by removing the hardcoded local `org.gradle.java.home` path from project properties.
+- Fixed and continued portal-prep tool behavior around fluid casting interactions.
+
+## Changed
+
+- Updated build/runtime documentation to match the current Java `25` requirement.
+- Kept the current mod version aligned with `1.0.5.4-release+26.2`.
+
 # Changelog v1.0.5.2-release+1.21.1
 
 **Important: Earlier proposed second part features will be added in the next patch and this new update marks the end of support for 1.20.6 and below.**
@@ -240,17 +259,17 @@ For playing the game, download the jar file either from modrinth or the releases
 ---
 # Buidling the project from intellij
 
-Step 1. Download Java 21. 
+Step 1. Download Java 25.
 
-This project is built on java 17 to support carpet mod's updated API.
+This project is built with Java 25 for the current Minecraft 26.2/Fabric toolchain.
 
-Go to: https://bell-sw.com/pages/downloads/#jdk-21-lts
+Go to: https://jdk.java.net/25/
 
 Click on Download MSI and finish the installation process. [Windows]
 
 ![image](https://github.com/user-attachments/assets/8cf3cbe1-91a9-4d7e-9510-84723d928025)
 
-**For linux users, depending on your system install openjdk-21-jdk package.**
+**For linux users, depending on your system install an OpenJDK 25 package.**
 
 
 Step 2. Download IntelliJ idea community edition.
@@ -279,7 +298,7 @@ Go to Project Structure
 
 ![image](https://github.com/user-attachments/assets/8979a760-3a96-49a6-8a42-c8dcd4c2e0ee)
 
-Configure the SDK here, set it to liberica 21
+Configure the SDK here, set it to Java 25.
 
 
 Step 5. Once done wait for intellij to build the project sources, this will take a while as it basically downloads minecraft to run in a test version.
@@ -293,7 +312,7 @@ Additionally you can go to the terminal icon on the bottom left
 
 ![image](https://github.com/user-attachments/assets/f95f54ab-847a-42de-b3d8-4401f03ac83a)
 
-And type `./graldew build`
+And type `./gradlew build`
 
 ---
 
